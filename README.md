@@ -27,4 +27,4 @@ In-memory URL shortener(Currently: Part 1.)
     gofmt -l . && go vet ./... && go test -race ./...
     go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out
 
-Design choices are in [DECISIONS.md](DECISIONS.md).
+Design choices are in [Decisions.md](Decisions.md).
