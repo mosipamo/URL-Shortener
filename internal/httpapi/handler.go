@@ -6,13 +6,14 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/mosipamo/URL-Shortener.git/internal/store"
 )
 
 type Store interface {
 	Save(longURL string) (code string, err error)
-	Get(code string) (longURL string, err error)
+	Get(code string) (longURL store.Link, err error)
 }
 
 type server struct {
@@ -24,6 +25,7 @@ func New(s Store, baseURL string) http.Handler {
 	srv := &server{store: s, baseURL: strings.TrimRight(baseURL, "/")}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/shorten", srv.handleShorten)
+	mux.HandleFunc("GET /api/v1/links/{code}", srv.handleLinkInfo)
 	mux.HandleFunc("GET /{code}", srv.handleRedirect)
 	return mux
 }
@@ -37,6 +39,11 @@ type shortenResponse struct {
 	ShortURL string `json:"short_url"`
 }
 
+type linkResponse struct {
+	URL       string `json:"url"`
+	CreatedAt string `json:"created_at"`
+}
+
 func (s *server) handleShorten(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
@@ -48,13 +55,7 @@ func (s *server) handleShorten(w http.ResponseWriter, r *http.Request) {
 
 	code, err := s.store.Save(req.URL)
 	if err != nil {
-		switch {
-		case errors.Is(err, store.ErrInvalidURL):
-			writeError(w, http.StatusBadRequest, err.Error())
-		default:
-			log.Printf("shorten: %v", err)
-			writeError(w, http.StatusInternalServerError, "internal error")
-		}
+		writeStoreError(w, err)
 		return
 	}
 
@@ -65,17 +66,36 @@ func (s *server) handleShorten(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleRedirect(w http.ResponseWriter, r *http.Request) {
-	longURL, err := s.store.Get(r.PathValue("code"))
+	link, err := s.store.Get(r.PathValue("code"))
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "not found")
-			return
-		}
-		log.Printf("redirect: %v", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeStoreError(w, err)
 		return
 	}
-	http.Redirect(w, r, longURL, http.StatusFound)
+	http.Redirect(w, r, link.URL, http.StatusFound)
+}
+
+func (s *server) handleLinkInfo(w http.ResponseWriter, r *http.Request) {
+	link, err := s.store.Get(r.PathValue("code"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, linkResponse{
+		URL:       link.URL,
+		CreatedAt: link.CreatedAt.UTC().Format(time.RFC3339),
+	})
+}
+
+func writeStoreError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrInvalidURL):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not found")
+	default:
+		log.Printf("internal error: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

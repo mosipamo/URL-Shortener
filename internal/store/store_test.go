@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestSaveAndGet(t *testing.T) {
@@ -18,8 +19,8 @@ func TestSaveAndGet(t *testing.T) {
 		t.Fatalf("bad code %q", code)
 	}
 	got, err := s.Get(code)
-	if err != nil || got != "https://example.com/a" {
-		t.Fatalf("Get = %q, %v", got, err)
+	if err != nil || got.URL != "https://example.com/a" {
+		t.Fatalf("Get = %+v, %v", got, err)
 	}
 }
 
@@ -171,5 +172,29 @@ func TestConcurrentDistinctSave(t *testing.T) {
 			t.Fatalf("duplicate code %q for distinct URLs", c)
 		}
 		seen[c] = true
+	}
+}
+
+func TestSaveIdempotentKeepsCreatedAt(t *testing.T) {
+	s := New()
+	tick := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time {
+		t := tick
+		tick = tick.Add(time.Hour)
+		return t
+	}
+
+	c1, _ := s.Save("https://example.com/x")
+	c2, _ := s.Save("https://example.com/x")
+	if c1 != c2 {
+		t.Fatalf("codes differ: %q vs %q", c1, c2)
+	}
+	l, err := s.Get(c1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+	if !l.CreatedAt.Equal(want) {
+		t.Fatalf("CreatedAt = %v, want %v", l.CreatedAt, want)
 	}
 }
