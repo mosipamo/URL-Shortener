@@ -23,7 +23,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           httpapi.New(store.New(), *base),
+		Handler:           httpapi.Logging(log.Default(), httpapi.New(store.New(), *base)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,

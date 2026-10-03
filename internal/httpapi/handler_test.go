@@ -14,7 +14,9 @@ import (
 
 const base = "http://localhost:8080"
 
-func newHandler() http.Handler { return New(store.New(), base) }
+func newHandler() http.Handler {
+	return New(store.New(), base)
+}
 
 func post(h http.Handler, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/api/shorten", strings.NewReader(body))
