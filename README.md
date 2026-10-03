@@ -26,3 +26,5 @@ In-memory URL shortener, Go 1.22+, stdlib only. (Currently: Part 1.)
 
     gofmt -l . && go vet ./... && go test -race ./...
     go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out
+
+Design choices are in [DECISIONS.md](DECISIONS.md).
