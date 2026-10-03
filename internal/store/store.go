@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -21,18 +22,25 @@ const (
 	maxRetries = 10
 )
 
+type Link struct {
+	URL       string
+	CreatedAt time.Time
+}
+
 type Memory struct {
 	mu    sync.Mutex
-	links map[string]string
+	links map[string]Link
 	byURL map[string]string
 	gen   func() string
+	now   func() time.Time
 }
 
 func New() *Memory {
 	return &Memory{
-		links: make(map[string]string),
+		links: make(map[string]Link),
 		byURL: make(map[string]string),
 		gen:   randomCode,
+		now:   time.Now,
 	}
 }
 
@@ -54,22 +62,22 @@ func (m *Memory) Save(rawURL string) (string, error) {
 		if _, taken := m.links[code]; taken {
 			continue
 		}
-		m.links[code] = longURL
+		m.links[code] = Link{URL: longURL, CreatedAt: m.now().UTC()}
 		m.byURL[longURL] = code
 		return code, nil
 	}
 	return "", ErrCodeExhausted
 }
 
-func (m *Memory) Get(code string) (string, error) {
+func (m *Memory) Get(code string) (Link, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	u, ok := m.links[code]
+	link, ok := m.links[code]
 	if !ok {
-		return "", fmt.Errorf("get %q: %w", code, ErrNotFound)
+		return Link{}, fmt.Errorf("get %q: %w", code, ErrNotFound)
 	}
-	return u, nil
+	return link, nil
 }
 
 func Normalize(raw string) (string, error) {

@@ -2,12 +2,14 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mosipamo/URL-Shortener.git/internal/store"
 )
@@ -171,5 +173,123 @@ func TestConcurrentDuplicateShortenHTTP(t *testing.T) {
 		if c != codes[0] {
 			t.Fatalf("codes differ: %q vs %q", c, codes[0])
 		}
+	}
+}
+
+func linkInfo(h http.Handler, code string) *httptest.ResponseRecorder {
+	return get(h, "/api/v1/links/"+code)
+}
+
+func TestLinkInfoOK(t *testing.T) {
+	created := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+	h := New(fakeStore{
+		getFn: func(code string) (store.Link, error) {
+			return store.Link{URL: "https://go.dev/doc/", CreatedAt: created}, nil
+		},
+	}, base)
+
+	rec := linkInfo(h, "abc1234")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+	var got map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"url": "https://go.dev/doc/", "created_at": "2026-01-15T12:00:00Z"}
+	if len(got) != 2 || got["url"] != want["url"] || got["created_at"] != want["created_at"] {
+		t.Fatalf("body = %v, want %v", got, want)
+	}
+}
+
+func TestLinkInfoNotFound(t *testing.T) {
+	rec := linkInfo(newHandler(), "doesnotexist")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestLinkInfoViaRealStoreAndIdempotency(t *testing.T) {
+	h := newHandler()
+	a := shorten(t, h, "https://go.dev/doc/")
+
+	rec := linkInfo(h, a.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var first linkResponse
+	_ = json.NewDecoder(rec.Body).Decode(&first)
+	if first.URL != "https://go.dev/doc/" {
+		t.Fatalf("url = %q", first.URL)
+	}
+	if _, err := time.Parse(time.RFC3339, first.CreatedAt); err != nil {
+		t.Fatalf("created_at %q is not RFC3339: %v", first.CreatedAt, err)
+	}
+	b := shorten(t, h, "https://go.dev/doc/")
+	if a != b {
+		t.Fatalf("idempotency broken: %+v vs %+v", a, b)
+	}
+	var second linkResponse
+	_ = json.NewDecoder(linkInfo(h, b.Code).Body).Decode(&second)
+	if first != second {
+		t.Fatalf("metadata changed after repeat shorten: %+v vs %+v", first, second)
+	}
+}
+
+func TestErrorMapping(t *testing.T) {
+	wrap := func(err error) error { return fmt.Errorf("layer2: %w", fmt.Errorf("layer1: %w", err)) }
+
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+	}{
+		{"invalid url", store.ErrInvalidURL, http.StatusBadRequest},
+		{"wrapped invalid url", wrap(store.ErrInvalidURL), http.StatusBadRequest},
+		{"not found", store.ErrNotFound, http.StatusNotFound},
+		{"wrapped not found", wrap(store.ErrNotFound), http.StatusNotFound},
+		{"code exhausted", store.ErrCodeExhausted, http.StatusInternalServerError},
+		{"unknown error", errors.New("db is down"), http.StatusInternalServerError},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := New(fakeStore{
+				saveFn: func(string) (string, error) { return "", tc.err },
+				getFn:  func(string) (store.Link, error) { return store.Link{}, tc.err },
+			}, base)
+
+			routes := []*httptest.ResponseRecorder{
+				post(h, `{"url":"https://example.com"}`),
+				get(h, "/abc1234"),
+				linkInfo(h, "abc1234"),
+			}
+			for i, rec := range routes {
+				if rec.Code != tc.wantStatus {
+					t.Errorf("route %d: status = %d, want %d", i, rec.Code, tc.wantStatus)
+				}
+				var body map[string]string
+				if err := json.NewDecoder(rec.Body).Decode(&body); err != nil || body["error"] == "" {
+					t.Errorf("route %d: body should be {\"error\":...}, got %q (%v)", i, rec.Body, err)
+				}
+				if tc.wantStatus == http.StatusInternalServerError && strings.Contains(rec.Body.String(), "db is down") {
+					t.Errorf("route %d: internal error text leaked to client", i)
+				}
+			}
+		})
+	}
+}
+
+func TestRedirectUsesLinkURL(t *testing.T) {
+	h := New(fakeStore{
+		getFn: func(string) (store.Link, error) {
+			return store.Link{URL: "https://example.org/target"}, nil
+		},
+	}, base)
+	rec := get(h, "/whatever")
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "https://example.org/target" {
+		t.Fatalf("status %d, Location %q", rec.Code, rec.Header().Get("Location"))
 	}
 }
