@@ -1,0 +1,7 @@
+/server
+*.test
+*.out
+coverage.out
+*.prof
+.vscode/
+*.png
