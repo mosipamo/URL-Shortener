@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"url-shortener/internal/store"
+	"github.com/mosipamo/URL-Shortener.git/internal/store"
 )
 
 func TestLogging(t *testing.T) {

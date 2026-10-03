@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"url-shortener/internal/httpapi"
-	"url-shortener/internal/store"
+	"github.com/mosipamo/URL-Shortener.git/internal/httpapi"
+	"github.com/mosipamo/URL-Shortener.git/internal/store"
 )
 
 const (

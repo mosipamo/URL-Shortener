@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"url-shortener/internal/store"
+	"github.com/mosipamo/URL-Shortener.git/internal/store"
 )
 
 type Store interface {

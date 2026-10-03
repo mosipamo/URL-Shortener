@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"url-shortener/internal/store"
+	"github.com/mosipamo/URL-Shortener.git/internal/store"
 )
 
 const base = "http://localhost:8080"

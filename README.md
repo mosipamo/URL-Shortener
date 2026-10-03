@@ -1,6 +1,6 @@
 # URL Shortener
 
-In-memory URL shortener, Go 1.22+, stdlib only. (Currently: Part 1.)
+In-memory URL shortener(Currently: Part 1.)
 
 ## Run
 
