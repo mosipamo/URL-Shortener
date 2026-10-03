@@ -9,7 +9,7 @@ import (
 )
 
 func TestSaveAndGet(t *testing.T) {
-	s := NewMemory()
+	s := New()
 	code, err := s.Save("https://example.com/a")
 	if err != nil {
 		t.Fatal(err)
@@ -36,7 +36,7 @@ func TestSaveInvalid(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := NewMemory().Save(tc.in); !errors.Is(err, ErrInvalidURL) {
+			if _, err := New().Save(tc.in); !errors.Is(err, ErrInvalidURL) {
 				t.Fatalf("err = %v, want ErrInvalidURL", err)
 			}
 		})
@@ -44,7 +44,7 @@ func TestSaveInvalid(t *testing.T) {
 }
 
 func TestGetNotFound(t *testing.T) {
-	if _, err := NewMemory().Get("nope"); !errors.Is(err, ErrNotFound) {
+	if _, err := New().Get("nope"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
@@ -69,7 +69,7 @@ func TestNormalize(t *testing.T) {
 }
 
 func TestSaveIdempotent(t *testing.T) {
-	s := NewMemory()
+	s := New()
 	c1, _ := s.Save("https://Example.com")
 	c2, _ := s.Save("https://example.com/")
 	if c1 != c2 {
@@ -82,7 +82,7 @@ func TestSaveIdempotent(t *testing.T) {
 }
 
 func TestCollisionRetry(t *testing.T) {
-	s := NewMemory()
+	s := New()
 	seq := []string{"aaaaaaa", "aaaaaaa", "aaaaaaa", "bbbbbbb"}
 	s.gen = func() string { c := seq[0]; seq = seq[1:]; return c }
 
@@ -97,7 +97,7 @@ func TestCollisionRetry(t *testing.T) {
 }
 
 func TestCollisionExhausted(t *testing.T) {
-	s := NewMemory()
+	s := New()
 	s.gen = func() string { return "same123" }
 	if _, err := s.Save("https://one.example"); err != nil {
 		t.Fatal(err)
@@ -120,7 +120,7 @@ func TestRandomCodeAlphabetAndLength(t *testing.T) {
 }
 
 func TestConcurrentDuplicateSave(t *testing.T) {
-	s := NewMemory()
+	s := New()
 	const n = 100
 	codes := make([]string, n)
 	var wg sync.WaitGroup
@@ -148,7 +148,7 @@ func TestConcurrentDuplicateSave(t *testing.T) {
 }
 
 func TestConcurrentDistinctSave(t *testing.T) {
-	s := NewMemory()
+	s := New()
 	const n = 200
 	codes := make(chan string, n)
 	var wg sync.WaitGroup

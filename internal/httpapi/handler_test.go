@@ -14,7 +14,7 @@ import (
 
 const base = "http://localhost:8080"
 
-func newHandler() http.Handler { return New(store.NewMemory(), base) }
+func newHandler() http.Handler { return New(store.New(), base) }
 
 func post(h http.Handler, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/api/shorten", strings.NewReader(body))
@@ -93,7 +93,7 @@ func TestRedirectUnknownCode(t *testing.T) {
 }
 
 func TestBaseURLTrailingSlash(t *testing.T) {
-	h := New(store.NewMemory(), base+"/")
+	h := New(store.New(), base+"/")
 	resp := shorten(t, h, "https://example.com")
 	if resp.ShortURL != base+"/"+resp.Code {
 		t.Fatalf("short_url = %q", resp.ShortURL)

@@ -28,7 +28,7 @@ type Memory struct {
 	gen   func() string
 }
 
-func NewMemory() *Memory {
+func New() *Memory {
 	return &Memory{
 		links: make(map[string]string),
 		byURL: make(map[string]string),
