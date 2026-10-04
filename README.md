@@ -1,6 +1,6 @@
 # URL Shortener
 
-In-memory URL shortener(Currently: Part 1.)
+In-memory URL shortener. (Currently: Parts 1–3.)
 
 ## Run
 
@@ -37,5 +37,24 @@ shorten. Covered by tests in `internal/store` and `internal/httpapi`.
 
     gofmt -l . && go vet ./... && go test -race ./...
     go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | tail -n1
+
+## Performance
+
+    go test -run='^$' -bench=. -benchmem ./...                     # benchmarks only
+    go test -run='^$' -bench=BenchmarkRedirect -cpuprofile cpu.out ./internal/httpapi
+    go tool pprof -top cpu.out
+
+**Benchmark line** (Intel i5-13450HX, 16 threads, Go 1.22):
+`BenchmarkRedirect-16  1385 ns/op  6033 B/op  22 allocs/op` (full handler path,
+parallel throughput; measured before switching back to `Mutex`, the store is
+~2% of it so the change is within noise). Store lookup alone with the final
+`Mutex`: `BenchmarkGet-16  ~53 ns/op  0 B/op  0 allocs/op`.
+
+**Profiling insight:** in the redirect CPU profile the store lookup plus its
+lock is only ~2% of CPU, while `runtime.mallocgc` (allocation) is ~42%, mostly
+from request/response handling at ~6 KB and 22 allocations per request. The
+lock is not the bottleneck; allocations are. I benchmarked `Mutex` against
+`RWMutex` and kept `Mutex`: `RWMutex` only wins on 100%-read loops and loses
+as soon as creates are mixed in (details in Decisions.md, Part 3).
 
 Design choices are in [Decisions.md](Decisions.md).
