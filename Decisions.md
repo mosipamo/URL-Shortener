@@ -60,3 +60,81 @@ real store never produces.
   over HTTP (`TestLinkInfoViaRealStoreAndIdempotency`).
 - **Routing.** `GET /api/v1/links/{code}` and `GET /{code}` never conflict in
   mux (different segment counts), so the stdlib router is enough.
+
+## Part 3
+
+- **Locking choice: `sync.Mutex`** (one lock; `Save` and `Get` both take it;
+  `Save` does lookup → generate → insert in one critical section, as in
+  Part 1). I also built an `RWMutex` version (read lock for `Get` and for the
+  `Save` lookup fast path, write lock plus a second lookup before creating a
+  code) and benchmarked both on the same machine. It was correct (race tests
+  passed) but not faster for a realistic workload, so I reverted to `Mutex`.
+- **Measurements** (Intel i5-13450HX, 16 threads, Go 1.22, `-count=5`, median
+  ns/op, lower is better, identical benchmarks run against both versions).
+  Read-only and create paths:
+    | Benchmark                                                                    |    Threads |              Mutex |            RWMutex | Result                            |
+    | ---------------------------------------------------------------------------- | ---------: | -----------------: | -----------------: | --------------------------------- |
+    | `Get`                                                                        |          1 |               14.4 |               15.5 | ~equal                            |
+    | `Get`                                                                        |          4 |               30.9 |               48.2 | Mutex faster                      |
+    | `Get`                                                                        |         16 |               53.4 |               38.8 | RWMutex 27% faster                |
+    | `SaveExisting`                                                               |          4 |                109 |                 92 | RWMutex 15% faster                |
+    | `SaveExisting`                                                               |         16 |                165 |               84.5 | RWMutex 49% faster                |
+    | `SaveNew`                                                                    | 1 / 4 / 16 | 1954 / 1782 / 1811 | 2052 / 1870 / 1887 | equal (noise)                     |
+    | Mixed read/create workloads (`BenchmarkMixed`, one create per N operations): |
+    | Reads                                                                        |    Threads |              Mutex |            RWMutex | Result                            |
+    | ------:                                                                      |  --------: |            ------: |          --------: | --------                          |
+    | 90%                                                                          |          4 |                185 |                305 | Mutex faster (RW +65%)            |
+    | 90%                                                                          |         16 |                191 |                292 | Mutex faster (RW +53%)            |
+    | 99%                                                                          |          4 |               53.1 |               54.0 | tie                               |
+    | 99%                                                                          |         16 |               63.2 |               77.0 | Mutex faster (RW +22%)            |
+    | 99.9%                                                                        |          4 |               40.2 |               47.7 | Mutex faster (RW +19%)            |
+    | 99.9%                                                                        |         16 |               65.7 |               69.9 | Mutex faster (RW +6%, near noise) |
+    | Conclusion:                                                                  |
+    - `RWMutex` only wins when the workload is **100% reads** and many cores run
+      at once (`Get` and `SaveExisting` at 16 threads). As soon as even 1 in
+      1,000 operations is a create, the advantage disappears and `Mutex` is
+      equal or faster. A URL shortener always has some creates, so that
+      pure-read case does not describe a running service.
+    - A likely cause (not verified by profiling): a waiting writer makes new
+      readers park and wake, which costs more than a plain `Mutex` queue; and
+      `RWMutex.RLock` still updates a shared counter, so readers contend on a
+      cache line anyway.
+    - Caveat: `BenchmarkMixed` uses one shared atomic counter, which adds
+      contention to both versions, so absolute numbers are inflated. The
+      comparison between the two is still fair.
+    - All differences are at most ~100 ns, against a full redirect of 1,100+ ns
+      (see profile below), so end-to-end the choice is within a few percent.
+      With equal performance, the simpler lock wins.
+    - If the store ever became a measured bottleneck, the next steps would be
+      sharding the maps by code or an `atomic.Pointer` to an immutable map for
+      reads, not `RWMutex`.
+- **Where the time actually goes (profile of the redirect benchmark).** A
+  store `Get` is ~15–55 ns, while a full redirect through the handler is
+  ~1.1–1.4 µs/op with 22 allocs/op. In the CPU profile (taken with the RWMutex build, which
+  is the heavier lock), `store.(*Memory).Get` is 0.7% and `RWMutex.RLock` 1.3%,
+  so lookup plus lock is about 2%, while `runtime.mallocgc` is 42%.
+  `httptest.NewRequest` alone is 37%, which is benchmark harness overhead and
+  not server code; `handleRedirect` (including `http.Redirect`) is 24%.
+  About 18% is the Go runtime (`futex`, `procyield`, `lock2`): 16 goroutines
+  contending on the allocator and GC because each request allocates ~6 KB.
+  Lock choice therefore barely matters for end-to-end speed; allocation does.
+  For `SaveExisting`, most of the time is in `Normalize` (`url.Parse` +
+  `URL.String`), not in the lock. Possible future optimization (not done, not
+  needed yet): skip re-parsing for inputs that are already canonical.
+  Note: `ns/op` in `RunParallel` benchmarks is wall-clock time divided by
+  total operations across all goroutines, so it measures throughput, not the
+  latency of one request.
+- **Server timeouts** (set in `cmd/server/main.go`, constants at the top):
+    | Setting                                                                     | Value | Why / behavior                                                                                                                                                                                                       |
+    | --------------------------------------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+    | `ReadHeaderTimeout`                                                         | 5 s   | Headers of a normal request arrive in milliseconds. A client that trickles headers (slowloris) is cut off. Observed: a connection that never finishes its headers, or sends nothing, is closed silently after 5.0 s. |
+    | `ReadTimeout`                                                               | 10 s  | Whole request including body. Bodies are tiny JSON (also capped at 1 MiB), so 10 s is generous.                                                                                                                      |
+    | `WriteTimeout`                                                              | 10 s  | Responses are small; a client that stops reading is dropped.                                                                                                                                                         |
+    | `IdleTimeout`                                                               | 60 s  | Keep-alive connections waiting for another request are closed after a minute, freeing file descriptors.                                                                                                              |
+    | `newServer` builds the server so a test can assert the timeouts are set and |
+    | ordered sensibly.                                                           |
+- **Eviction cap: none.** For a cache, evicting is harmless; for a URL
+  shortener it is data loss: every place the short link was shared would start
+  returning 404. Memory use grows ~0.5 KB per new link (upper bound, from
+  `B/op` of `BenchmarkSaveNew`), so ~1M links is roughly 0.5 GB. Bounding
+  memory is the job of the persistent store in Part 4, not of deleting links.

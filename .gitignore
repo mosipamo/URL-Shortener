@@ -6,3 +6,4 @@ coverage.out
 .vscode/
 *.png
 Checklist.md
+store.go.RWMutex
