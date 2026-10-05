@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,13 +13,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mosipamo/URL-Shortener/internal/model"
 	"github.com/mosipamo/URL-Shortener/internal/store"
 )
 
 const base = "http://localhost:8080"
 
+// newHandler builds a handler backed by a real in-memory store, with logging
+// discarded so test output stays clean.
 func newHandler() http.Handler {
-	return New(store.New(), base)
+	return New(store.New(), base, log.New(io.Discard, "", 0))
 }
 
 func post(h http.Handler, body string) *httptest.ResponseRecorder {
@@ -97,7 +102,7 @@ func TestRedirectUnknownCode(t *testing.T) {
 }
 
 func TestBaseURLTrailingSlash(t *testing.T) {
-	h := New(store.New(), base+"/")
+	h := New(store.New(), base+"/", log.New(io.Discard, "", 0))
 	resp := shorten(t, h, "https://example.com")
 	if resp.ShortURL != base+"/"+resp.Code {
 		t.Fatalf("short_url = %q", resp.ShortURL)
@@ -140,7 +145,7 @@ func TestShortenIdempotent(t *testing.T) {
 	}
 	c := shorten(t, h, "https://go.dev/blog/")
 	if c.Code == a.Code {
-		t.Fatal("different URLs must get different codes")
+		t.Fatal("different URLs must not share a code")
 	}
 }
 
@@ -183,17 +188,17 @@ func linkInfo(h http.Handler, code string) *httptest.ResponseRecorder {
 func TestLinkInfoOK(t *testing.T) {
 	created := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
 	h := New(fakeStore{
-		getFn: func(code string) (store.Link, error) {
-			return store.Link{URL: "https://go.dev/doc/", CreatedAt: created}, nil
+		getFn: func(code string) (model.Link, error) {
+			return model.Link{URL: "https://go.dev/doc/", CreatedAt: created}, nil
 		},
-	}, base)
+	}, base, log.New(io.Discard, "", 0))
 
 	rec := linkInfo(h, "abc1234")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-		t.Fatalf("Content-Type = %q", ct)
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", ct)
 	}
 	var got map[string]string
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
@@ -247,19 +252,19 @@ func TestErrorMapping(t *testing.T) {
 		err        error
 		wantStatus int
 	}{
-		{"invalid url", store.ErrInvalidURL, http.StatusBadRequest},
-		{"wrapped invalid url", wrap(store.ErrInvalidURL), http.StatusBadRequest},
-		{"not found", store.ErrNotFound, http.StatusNotFound},
-		{"wrapped not found", wrap(store.ErrNotFound), http.StatusNotFound},
-		{"code exhausted", store.ErrCodeExhausted, http.StatusInternalServerError},
+		{"invalid url", model.ErrInvalidURL, http.StatusBadRequest},
+		{"wrapped invalid url", wrap(model.ErrInvalidURL), http.StatusBadRequest},
+		{"not found", model.ErrNotFound, http.StatusNotFound},
+		{"wrapped not found", wrap(model.ErrNotFound), http.StatusNotFound},
+		{"code exhausted", model.ErrCodeExhausted, http.StatusInternalServerError},
 		{"unknown error", errors.New("db is down"), http.StatusInternalServerError},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			h := New(fakeStore{
 				saveFn: func(string) (string, error) { return "", tc.err },
-				getFn:  func(string) (store.Link, error) { return store.Link{}, tc.err },
-			}, base)
+				getFn:  func(string) (model.Link, error) { return model.Link{}, tc.err },
+			}, base, log.New(io.Discard, "", 0))
 
 			routes := []*httptest.ResponseRecorder{
 				post(h, `{"url":"https://example.com"}`),
@@ -284,10 +289,10 @@ func TestErrorMapping(t *testing.T) {
 
 func TestRedirectUsesLinkURL(t *testing.T) {
 	h := New(fakeStore{
-		getFn: func(string) (store.Link, error) {
-			return store.Link{URL: "https://example.org/target"}, nil
+		getFn: func(string) (model.Link, error) {
+			return model.Link{URL: "https://example.org/target"}, nil
 		},
-	}, base)
+	}, base, log.New(io.Discard, "", 0))
 	rec := get(h, "/whatever")
 	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "https://example.org/target" {
 		t.Fatalf("status %d, Location %q", rec.Code, rec.Header().Get("Location"))
@@ -296,7 +301,7 @@ func TestRedirectUsesLinkURL(t *testing.T) {
 
 func TestShortenURLTooLong(t *testing.T) {
 	h := newHandler()
-	long := "https://example.com/" + strings.Repeat("a", store.MaxURLLength)
+	long := "https://example.com/" + strings.Repeat("a", model.MaxURLLength)
 	if rec := post(h, fmt.Sprintf(`{"url":%q}`, long)); rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}

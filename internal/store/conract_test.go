@@ -8,14 +8,16 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/mosipamo/URL-Shortener/internal/model"
 )
 
-// linkStore is the behavior every store must have. The same contract runs
+// linkStore is the behaviour every store must have. The same contract runs
 // against Memory, SQLite-backed GORM, and (optionally) real PostgreSQL, which
 // proves the stores are interchangeable.
 type linkStore interface {
 	Save(longURL string) (string, error)
-	Get(code string) (Link, error)
+	Get(code string) (model.Link, error)
 }
 
 func runContract(t *testing.T, newStore func(t *testing.T) linkStore) {
@@ -66,16 +68,16 @@ func runContract(t *testing.T, newStore func(t *testing.T) linkStore) {
 	})
 
 	t.Run("unknown code", func(t *testing.T) {
-		if _, err := newStore(t).Get("nope123"); !errors.Is(err, ErrNotFound) {
+		if _, err := newStore(t).Get("nope123"); !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("err = %v, want ErrNotFound", err)
 		}
 	})
 
 	t.Run("invalid urls", func(t *testing.T) {
 		s := newStore(t)
-		long := "https://example.com/" + strings.Repeat("a", MaxURLLength)
+		long := "https://example.com/" + strings.Repeat("a", model.MaxURLLength)
 		for _, in := range []string{"", "   ", "ftp://x.com", "example.com", "javascript:alert(1)", "https://", long} {
-			if _, err := s.Save(in); !errors.Is(err, ErrInvalidURL) {
+			if _, err := s.Save(in); !errors.Is(err, model.ErrInvalidURL) {
 				t.Errorf("Save(%.30q) err = %v, want ErrInvalidURL", in, err)
 			}
 		}
@@ -84,10 +86,10 @@ func runContract(t *testing.T, newStore func(t *testing.T) linkStore) {
 	t.Run("longest allowed url", func(t *testing.T) {
 		s := newStore(t)
 		prefix := "https://example.com/"
-		u := prefix + strings.Repeat("a", MaxURLLength-len(prefix))
+		u := prefix + strings.Repeat("a", model.MaxURLLength-len(prefix))
 		code, err := s.Save(u)
 		if err != nil {
-			t.Fatalf("a URL of exactly %d bytes must be accepted: %v", MaxURLLength, err)
+			t.Fatalf("a URL of exactly %d bytes must be accepted: %v", model.MaxURLLength, err)
 		}
 		if l, err := s.Get(code); err != nil || l.URL != u {
 			t.Fatalf("round trip failed: %v", err)

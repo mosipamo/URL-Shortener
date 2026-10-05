@@ -11,14 +11,16 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
+
+	"github.com/mosipamo/URL-Shortener/internal/model"
 )
 
-// linkRow is the database model. GORM derives the column names from the
-// field names (CreatedAt -> created_at); TableName sets the table name.
+// linkRow is the GORM database model. Column names are derived from field
+// names (CreatedAt → created_at); TableName sets the table name.
 //
-// Constraints do the work that the mutex did in Memory:
-//   - code is the PRIMARY KEY: two links can never share a code.
-//   - url has a UNIQUE index: one URL can never get two codes.
+// Database constraints mirror the mutex invariants of Memory:
+//   - code is the PRIMARY KEY → two links can never share a code.
+//   - url has a UNIQUE index  → one URL can never get two codes.
 type linkRow struct {
 	Code      string    `gorm:"primaryKey;size:16"`
 	URL       string    `gorm:"not null;size:2048;uniqueIndex"`
@@ -27,7 +29,7 @@ type linkRow struct {
 
 func (linkRow) TableName() string { return "links" }
 
-// GormStore is a durable Store backed by any database GORM supports
+// GormStore is a durable Repository backed by any database GORM supports
 // (PostgreSQL in production, SQLite in tests).
 type GormStore struct {
 	db  *gorm.DB
@@ -77,7 +79,7 @@ func OpenPostgres(dsn string) (*gorm.DB, error) {
 	return db, nil
 }
 
-// Save normalizes rawURL and returns its code, creating it if the URL is new.
+// Save normalises rawURL and returns its code, creating it if the URL is new.
 //
 // The same URL always maps to the same code, across restarts and even when
 // many requests (or many servers) shorten it at the same moment, because the
@@ -107,7 +109,7 @@ func (s *GormStore) Save(rawURL string) (string, error) {
 		}
 		// Not done: the random code collided with a different URL. Retry.
 	}
-	return "", ErrCodeExhausted
+	return "", model.ErrCodeExhausted
 }
 
 // tryInsert makes one attempt to create the link with a fresh random code.
@@ -154,17 +156,17 @@ func (s *GormStore) codeForURL(longURL string) (code string, ok bool, err error)
 	return row.Code, true, nil
 }
 
-// Get returns the Link for code, or an error wrapping ErrNotFound.
-func (s *GormStore) Get(code string) (Link, error) {
+// Get returns the model.Link for code, or an error wrapping model.ErrNotFound.
+func (s *GormStore) Get(code string) (model.Link, error) {
 	var row linkRow
 	err := s.db.Where("code = ?", code).Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return Link{}, fmt.Errorf("get %q: %w", code, ErrNotFound)
+		return model.Link{}, fmt.Errorf("get %q: %w", code, model.ErrNotFound)
 	}
 	if err != nil {
-		return Link{}, fmt.Errorf("get link: %w", err)
+		return model.Link{}, fmt.Errorf("get link: %w", err)
 	}
-	return Link{URL: row.URL, CreatedAt: row.CreatedAt.UTC()}, nil
+	return model.Link{URL: row.URL, CreatedAt: row.CreatedAt.UTC()}, nil
 }
 
 // Count returns how many links are stored (used for the startup log line).

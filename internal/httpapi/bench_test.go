@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"io"
+	"log"
 	"net/http"
 	"testing"
 
+	"github.com/mosipamo/URL-Shortener/internal/model"
 	"github.com/mosipamo/URL-Shortener/internal/store"
 )
 
@@ -37,7 +40,7 @@ func BenchmarkRedirect(b *testing.B) {
 func BenchmarkShortenHandlerOnly(b *testing.B) {
 	h := New(fakeStore{
 		saveFn: func(string) (string, error) { return "abc1234", nil },
-	}, base)
+	}, base, log.New(io.Discard, "", 0))
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -49,15 +52,28 @@ func BenchmarkShortenHandlerOnly(b *testing.B) {
 
 func BenchmarkRedirectHandlerOnly(b *testing.B) {
 	h := New(fakeStore{
-		getFn: func(string) (store.Link, error) {
-			return store.Link{URL: "https://example.org/target"}, nil
+		getFn: func(string) (model.Link, error) {
+			return model.Link{URL: "https://example.org/target"}, nil
 		},
-	}, base)
+	}, base, log.New(io.Discard, "", 0))
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			get(h, "/whatever")
+		}
+	})
+}
+
+// BenchmarkShortenWithRealStore benchmarks the full shorten path including
+// store normalisation and code generation.
+func BenchmarkShortenWithRealStore(b *testing.B) {
+	h := New(store.New(), base, log.New(io.Discard, "", 0))
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			post(h, `{"url":"https://example.com/bench"}`)
 		}
 	})
 }

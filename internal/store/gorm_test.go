@@ -10,6 +10,8 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	"github.com/mosipamo/URL-Shortener/internal/model"
 )
 
 // openSQLite opens (or reopens) a SQLite file. SQLite is only the test
@@ -120,7 +122,7 @@ func TestGormCollisionExhausted(t *testing.T) {
 	if _, err := s.Save("https://one.example"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Save("https://two.example"); !errors.Is(err, ErrCodeExhausted) {
+	if _, err := s.Save("https://two.example"); !errors.Is(err, model.ErrCodeExhausted) {
 		t.Fatalf("err = %v, want ErrCodeExhausted", err)
 	}
 	if _, err := s.Save("https://one.example"); err != nil { // existing URL still works
@@ -156,11 +158,11 @@ func TestGormDatabaseErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := s.Get(code); err == nil || errors.Is(err, ErrNotFound) {
+	if _, err := s.Get(code); err == nil || errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("Get on closed DB: err = %v, want a non-NotFound error", err)
 	}
 	if _, err := s.Save("https://example.com/y"); err == nil ||
-		errors.Is(err, ErrInvalidURL) || errors.Is(err, ErrCodeExhausted) {
+		errors.Is(err, model.ErrInvalidURL) || errors.Is(err, model.ErrCodeExhausted) {
 		t.Fatalf("Save on closed DB: err = %v, want a database error", err)
 	}
 	if _, err := s.Count(); err == nil {

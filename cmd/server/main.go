@@ -12,6 +12,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/mosipamo/URL-Shortener/internal/envfile"
 	"github.com/mosipamo/URL-Shortener/internal/httpapi"
+	"github.com/mosipamo/URL-Shortener/internal/repository"
 	"github.com/mosipamo/URL-Shortener/internal/store"
 )
 
@@ -24,10 +25,12 @@ const (
 	idleTimeout       = 60 * time.Second
 )
 
-func newServer(addr, base string, s httpapi.Store) *http.Server {
+// newServer wires the Gin engine (with logging middleware) into an http.Server
+// with all production timeouts configured.
+func newServer(addr, base string, repo repository.Repository) *http.Server {
 	return &http.Server{
 		Addr:              addr,
-		Handler:           httpapi.Logging(log.Default(), httpapi.New(s, base)),
+		Handler:           httpapi.New(repo, base, log.Default()),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
@@ -35,10 +38,10 @@ func newServer(addr, base string, s httpapi.Store) *http.Server {
 	}
 }
 
-// openStore builds the store selected by -store. It returns the store and a
-// function that releases its resources. The DSN contains a password, so it is
-// never printed or included in error messages here.
-func openStore(kind, dsn string) (httpapi.Store, func() error, error) {
+// openStore builds the store selected by the STORE environment variable.
+// It returns the store and a function that releases its resources. The DSN
+// contains a password so it is never printed or included in error messages.
+func openStore(kind, dsn string) (repository.Repository, func() error, error) {
 	switch kind {
 	case "memory":
 		return store.New(), func() error { return nil }, nil
@@ -80,12 +83,12 @@ func main() {
 	}
 
 	kind := os.Getenv("STORE")
-	s, closeStore, err := openStore(kind, os.Getenv("DATABASE_URL"))
+	repo, closeStore, err := openStore(kind, os.Getenv("DATABASE_URL"))
 	if err != nil {
 		log.Fatalf("store: %v", err)
 	}
 
-	srv := newServer(*addr, *base, s)
+	srv := newServer(*addr, *base, repo)
 	log.Printf("listening on %s (base %s, store %s)", *addr, *base, kind)
 	err = srv.ListenAndServe()
 	if cerr := closeStore(); cerr != nil {

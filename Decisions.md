@@ -2,7 +2,7 @@
 
 ## Dependencies
 
-None. The project uses only the Go standard library, with `net/http` for HTTP routing.
+`github.com/gin-gonic/gin` is the HTTP router and context framework (refactor branch). It is an explicitly allowed dependency under the project spec and therefore not listed further here. All other dependencies (GORM, godotenv) are unchanged.
 
 ## Part 1
 
@@ -18,48 +18,33 @@ None. The project uses only the Go standard library, with `net/http` for HTTP ro
 
 - **Validation / SSRF.** A URL must be non-empty and parseable, use either the `http` or `https` scheme, and contain a host. The server never fetches the long URL; it only stores it and redirects clients to it.
 
-- **Package layout.** `cmd/server` contains flags and application wiring, `internal/store` contains the domain logic (normalization, code generation, and maps), and `internal/httpapi` contains the HTTP handlers and declares the `Store` interface consumed by the handlers.
+- **Package layout.** `cmd/server` contains flags and application wiring. `internal/model` holds the domain types (`Link`, sentinel errors, `MaxURLLength`) shared across all layers. `internal/repository` declares the `Repository` interface consumed by the HTTP handlers. `internal/store` holds the `Memory` and `GormStore` implementations plus the `Normalize` utility. `internal/httpapi` wires Gin routes and handlers.
 
 ## Part 2
 
-- **`Store` interface location and methods.** Declared in `internal/httpapi`
-  (the consumer), not in `internal/store`:
+- **`Repository` interface location and methods.** Declared in `internal/repository` (a dedicated contract package), implemented by `internal/store.Memory` and `internal/store.GormStore`:
 
 ```go
-  type Store interface {
-      Save(longURL string) (code string, err error)
-      Get(code string) (store.Link, error)
-  }
+type Repository interface {
+    Save(rawURL string) (code string, err error)
+    Get(code string) (link model.Link, err error)
+}
 ```
 
-`store.Link{URL, CreatedAt}` is the shared data type. `Save` returns only the
-code; the handlers read `created_at` through `Get`. The in-memory `Memory`
-satisfies it implicitly (checked at compile time in `fake_test.go`); tests use
-a `fakeStore` with function fields to force any result, including errors the
-real store never produces.
+`model.Link{URL, CreatedAt}` is the shared domain type, defined in `internal/model` so it has no dependencies on either the store or the HTTP layer. `Save` returns only the code; handlers retrieve `created_at` through `Get`. Compile-time assertions in `fake_test.go` guard that every concrete store satisfies the interface.
 
-- **Sentinel errors.** `store.ErrNotFound`, `store.ErrInvalidURL` (plus
-  `ErrCodeExhausted` for the practically unreachable collision case). The store
-  wraps them with context using `%w`, e.g. `get "abc": code not found`.
-- **How errors become status codes and bodies.** One function,
-  `writeStoreError`, used by every route, switches with `errors.Is`:
-    | Error                                                                        | Status | Body                                                                                             |
-    | ---------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------ |
-    | `ErrInvalidURL`                                                              | 400    | `{"error":"<store message>"}` (safe, tells the client what is wrong)                             |
-    | `ErrNotFound`                                                                | 404    | `{"error":"not found"}` (fixed text, so internal wrapping and the requested code are not echoed) |
-    | anything else                                                                | 500    | `{"error":"internal error"}`; the real error is only logged                                      |
-    | Malformed JSON is a handler-level 400 (`invalid JSON body`) because it never |
-    | reaches the store. All error bodies share the `{"error": "..."}` shape.      |
-- **`created_at`.** Set once, when the code is first created, in UTC from an
-  injectable clock (`Memory.now`) so tests are deterministic. Returned as
-  RFC3339 (`2026-01-15T12:00:00Z`), formatted explicitly because Go's default
-  `time.Time` JSON adds fractional seconds.
-- **Idempotency after the refactor.** `byURL` is unchanged and a repeated
-  `Save` returns the existing code without touching the stored `Link`, so
-  `created_at` stays the original. Tested in the store (advancing clock) and
-  over HTTP (`TestLinkInfoViaRealStoreAndIdempotency`).
-- **Routing.** `GET /api/v1/links/{code}` and `GET /{code}` never conflict in
-  mux (different segment counts), so the stdlib router is enough.
+- **Sentinel errors.** `model.ErrNotFound`, `model.ErrInvalidURL`, and `model.ErrCodeExhausted` live in `internal/model` so that neither the store implementations nor the HTTP layer need to import each other to compare errors. The store wraps them with `%w`, e.g. `get "abc": code not found`.
+- **How errors become status codes and bodies.** One method, `writeStoreError`, used by every Gin handler, switches with `errors.Is`:
+    | Error                                                                                                                                                     | Status | Body                                                                                   |
+    | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | -------------------------------------------------------------------------------------- |
+    | `ErrInvalidURL`                                                                                                                                           | 400    | `{"error":"<store message>"}` (safe, tells the client what is wrong)                   |
+    | `ErrNotFound`                                                                                                                                             | 404    | `{"error":"not found"}` (fixed text, so internal wrapping and the code are not echoed) |
+    | anything else                                                                                                                                             | 500    | `{"error":"internal error"}`; the real error is only logged                            |
+    | Malformed JSON is a handler-level 400 (`invalid JSON body`) because it never reaches the repository. All error bodies share the `{"error": "..."}` shape. |
+- **HTTP framework.** Gin (`github.com/gin-gonic/gin`) replaces the stdlib mux. Handlers receive a `*gin.Context` instead of `(http.ResponseWriter, *http.Request)`. `c.ShouldBindJSON` decodes the request body; `c.JSON` / `c.Redirect` write responses. Gin's radix-tree router resolves `GET /:code` vs `GET /api/v1/links/:code` without conflict because static path prefixes take priority over parameter wildcards.
+- **Logger middleware.** `httpapi.Logger(*log.Logger) gin.HandlerFunc` is a Gin middleware factory. It is injected into `New(repo, base, logger)` so tests can capture log output with `log.New(&buf, "", 0)` and production code passes `log.Default()`. The query string is omitted from log lines to prevent token/secret leakage.
+- **`created_at`.** Set once, when the code is first created, in UTC from an injectable clock (`Memory.now`) so tests are deterministic. Returned as RFC3339 (`2026-01-15T12:00:00Z`), formatted explicitly because Go's default `time.Time` JSON adds fractional seconds.
+- **Idempotency after the refactor.** `byURL` is unchanged and a repeated `Save` returns the existing code without touching the stored `Link`, so `created_at` stays the original. Tested in the store (advancing clock) and over HTTP (`TestLinkInfoViaRealStoreAndIdempotency`).
 
 ## Part 3
 
@@ -146,7 +131,7 @@ real store never produces.
   map or file cannot do once there is more than one server process. The
   in-memory `Memory` store stays as the default (`STORE=memory`, or no `STORE` at all), so
   `go run` works with nothing installed. `GormStore` implements the same
-  `httpapi.Store` interface (`Save`, `Get`); the handlers did not change.
+  `repository.Repository` interface (`Save`, `Get`); the handlers did not change.
   A compile-time assertion in `fake_test.go` guards that.
 - **Choosing the store and configuration.** `STORE=memory|postgres` (default
   `memory`) and `DATABASE_URL` are read from the environment, which can be
