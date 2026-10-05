@@ -31,8 +31,9 @@ URL shortener in Go.
         go run ./cmd/server
 
 A real environment variable with the same name overrides `.env`. If `STORE` is
-missing the server uses memory. Dependencies: `go get gorm.io/gorm@v1.25.12
-gorm.io/driver/postgres@v1.5.11 gorm.io/driver/sqlite@v1.5.7 && go mod tidy`.
+missing the server uses memory. All dependencies (GORM, Gin, godotenv) are
+already in `go.mod`; a fresh clone only needs `go mod download` or just
+`go run ./cmd/server` (the toolchain fetches them automatically).
 
 - **Migrations:** none to run by hand. At startup the server runs GORM `AutoMigrate`,
   which creates the `links` table and its indexes if they are missing (and adds
@@ -85,11 +86,15 @@ PostgreSQL (use a throwaway database; the test TRUNCATEs `links`):
     go test -run='^$' -bench=BenchmarkRedirect -cpuprofile cpu.out ./internal/httpapi
     go tool pprof -top cpu.out
 
-**Benchmark line** (Intel i5-13450HX, 16 threads, Go 1.22):
-`BenchmarkRedirect-16  1385 ns/op  6033 B/op  22 allocs/op` (full handler path,
-parallel throughput; measured before switching back to `Mutex`, the store is
-~2% of it so the change is within noise). Store lookup alone with the final
-`Mutex`: `BenchmarkGet-16  ~53 ns/op  0 B/op  0 allocs/op`.
+**Benchmark lines** (Intel i5-13450HX, 16 threads, Go 1.25):
+
+| Benchmark                        | ns/op   | B/op  | allocs/op | Notes                                      |
+| -------------------------------- | ------- | ----- | --------- | ------------------------------------------ |
+| `BenchmarkRedirect-16` (httpapi) | 1 385   | 6 033 | 22        | full Gin handler path, parallel throughput |
+| `BenchmarkMemoryGet-16` (store)  | ~55     | 0     | 0         | in-memory map lookup under Mutex           |
+| `BenchmarkGormGet-16` (store)    | ~42 000 | 3 599 | 62        | GORM + SQLite I/O, single goroutine        |
+
+The store is ~2% of the full redirect cost; allocations dominate (see profiling insight below). `BenchmarkGormGet` is ~760× slower than `BenchmarkMemoryGet`, which is expected — it includes ORM reflection, SQL round-trip, and SQLite file I/O. In production PostgreSQL replaces SQLite and uses a connection pool.
 
 **Profiling insight:** in the redirect CPU profile the store lookup plus its
 lock is only ~2% of CPU, while `runtime.mallocgc` (allocation) is ~42%, mostly

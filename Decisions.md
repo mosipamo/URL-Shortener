@@ -31,7 +31,7 @@ type Repository interface {
 }
 ```
 
-`model.Link{URL, CreatedAt}` is the shared domain type, defined in `internal/model` so it has no dependencies on either the store or the HTTP layer. `Save` returns only the code; handlers retrieve `created_at` through `Get`. Compile-time assertions in `fake_test.go` guard that every concrete store satisfies the interface.
+`model.Link{URL, CreatedAt}` is the shared domain type, defined in `internal/model` so it has no dependencies on either the store or the HTTP layer. `Save` returns only the code; handlers retrieve `created_at` through `Get`. Compile-time assertions guard that every concrete store satisfies the interface: in `internal/store/conract_test.go` (close to the implementations) and in `internal/httpapi/fake_test.go` (close to the consumer).
 
 - **Sentinel errors.** `model.ErrNotFound`, `model.ErrInvalidURL`, and `model.ErrCodeExhausted` live in `internal/model` so that neither the store implementations nor the HTTP layer need to import each other to compare errors. The store wraps them with `%w`, e.g. `get "abc": code not found`.
 - **How errors become status codes and bodies.** One method, `writeStoreError`, used by every Gin handler, switches with `errors.Is`:
@@ -56,25 +56,27 @@ type Repository interface {
   passed) but not faster for a realistic workload, so I reverted to `Mutex`.
 - **Measurements** (Intel i5-13450HX, 16 threads, Go 1.22, `-count=5`, median
   ns/op, lower is better, identical benchmarks run against both versions).
+  Benchmark names use the current `Memory` prefix (e.g. `BenchmarkMemoryGet`,
+  `BenchmarkMemorySaveExisting`, `BenchmarkMemorySaveNew`, `BenchmarkMemoryMixed`).
   Read-only and create paths:
-    | Benchmark                                                                    |    Threads |              Mutex |            RWMutex | Result                            |
-    | ---------------------------------------------------------------------------- | ---------: | -----------------: | -----------------: | --------------------------------- |
-    | `Get`                                                                        |          1 |               14.4 |               15.5 | ~equal                            |
-    | `Get`                                                                        |          4 |               30.9 |               48.2 | Mutex faster                      |
-    | `Get`                                                                        |         16 |               53.4 |               38.8 | RWMutex 27% faster                |
-    | `SaveExisting`                                                               |          4 |                109 |                 92 | RWMutex 15% faster                |
-    | `SaveExisting`                                                               |         16 |                165 |               84.5 | RWMutex 49% faster                |
-    | `SaveNew`                                                                    | 1 / 4 / 16 | 1954 / 1782 / 1811 | 2052 / 1870 / 1887 | equal (noise)                     |
-    | Mixed read/create workloads (`BenchmarkMixed`, one create per N operations): |
-    | Reads                                                                        |    Threads |              Mutex |            RWMutex | Result                            |
-    | ------:                                                                      |  --------: |            ------: |          --------: | --------                          |
-    | 90%                                                                          |          4 |                185 |                305 | Mutex faster (RW +65%)            |
-    | 90%                                                                          |         16 |                191 |                292 | Mutex faster (RW +53%)            |
-    | 99%                                                                          |          4 |               53.1 |               54.0 | tie                               |
-    | 99%                                                                          |         16 |               63.2 |               77.0 | Mutex faster (RW +22%)            |
-    | 99.9%                                                                        |          4 |               40.2 |               47.7 | Mutex faster (RW +19%)            |
-    | 99.9%                                                                        |         16 |               65.7 |               69.9 | Mutex faster (RW +6%, near noise) |
-    | Conclusion:                                                                  |
+    | Benchmark (`Memory` prefix)                                                 |    Threads |              Mutex |            RWMutex | Result                            |
+    | --------------------------------------------------------------------------- | ---------: | -----------------: | -----------------: | --------------------------------- |
+    | `Get`                                                                       |          1 |               14.4 |               15.5 | ~equal                            |
+    | `Get`                                                                       |          4 |               30.9 |               48.2 | Mutex faster                      |
+    | `Get`                                                                       |         16 |               53.4 |               38.8 | RWMutex 27% faster                |
+    | `SaveExisting`                                                              |          4 |                109 |                 92 | RWMutex 15% faster                |
+    | `SaveExisting`                                                              |         16 |                165 |               84.5 | RWMutex 49% faster                |
+    | `SaveNew`                                                                   | 1 / 4 / 16 | 1954 / 1782 / 1811 | 2052 / 1870 / 1887 | equal (noise)                     |
+    | Mixed read/create workloads (`BenchmarkMemoryMixed`, one create per N ops): |
+    | Reads                                                                       |    Threads |              Mutex |            RWMutex | Result                            |
+    | ------:                                                                     |  --------: |            ------: |          --------: | --------                          |
+    | 90%                                                                         |          4 |                185 |                305 | Mutex faster (RW +65%)            |
+    | 90%                                                                         |         16 |                191 |                292 | Mutex faster (RW +53%)            |
+    | 99%                                                                         |          4 |               53.1 |               54.0 | tie                               |
+    | 99%                                                                         |         16 |               63.2 |               77.0 | Mutex faster (RW +22%)            |
+    | 99.9%                                                                       |          4 |               40.2 |               47.7 | Mutex faster (RW +19%)            |
+    | 99.9%                                                                       |         16 |               65.7 |               69.9 | Mutex faster (RW +6%, near noise) |
+    | Conclusion:                                                                 |
     - `RWMutex` only wins when the workload is **100% reads** and many cores run
       at once (`Get` and `SaveExisting` at 16 threads). As soon as even 1 in
       1,000 operations is a create, the advantage disappears and `Mutex` is
@@ -121,7 +123,7 @@ type Repository interface {
 - **Eviction cap: none.** For a cache, evicting is harmless; for a URL
   shortener it is data loss: every place the short link was shared would start
   returning 404. Memory use grows ~0.5 KB per new link (upper bound, from
-  `B/op` of `BenchmarkSaveNew`), so ~1M links is roughly 0.5 GB. Bounding
+  `B/op` of `BenchmarkMemorySaveNew`), so ~1M links is roughly 0.5 GB. Bounding
   memory is the job of the persistent store in Part 4, not of deleting links.
 
 ## Part 4
@@ -197,20 +199,37 @@ ready: N existing links`). Restart tests prove earlier links resolve.
   text is only logged (Part 2 mapping, unchanged). A test closes the database
   and checks exactly that.
 - **Test strategy.**
-    1. One shared contract suite (`runContract`) runs against `Memory`, against
-       GORM + SQLite (always), and against real PostgreSQL (when
-       `TEST_DATABASE_URL` is set). Passing the same suite shows the stores are
-       interchangeable.
-    2. SQLite (`gorm.io/driver/sqlite`, an allowed GORM SQL driver, test-only) is
-       used so the GORM code runs in `go test` without a database server, which
-       the grader's machine may not have. The tests use one connection
-       (`SetMaxOpenConns(1)`) to avoid "database is locked". The driver needs
-       cgo, which `go test -race` needs anyway. `github.com/glebarez/sqlite` is a
-       pure-Go drop-in (one import line) if cgo is ever unavailable.
-    3. Restart test: a new store instance on the same database file sees the
+    1. One shared contract suite (`runContract` in `conract_test.go`) takes a
+       `func(t *testing.T) repository.Repository` factory and runs the same
+       behavioural assertions against every implementation. `TestContractMemory`,
+       `TestContractGorm` (SQLite), and `TestContractPostgres` (real PostgreSQL,
+       skipped unless `TEST_DATABASE_URL` is set) all call it, proving the
+       stores are interchangeable. The local `linkStore` interface that
+       previously duplicated `repository.Repository` has been removed.
+    2. **Compile-time assertions** (`var _ repository.Repository = (*Memory)(nil)`
+       etc.) live in `conract_test.go` (close to the implementations) and
+       in `httpapi/fake_test.go` (close to the consumer). A missing or
+       wrong-signature method is a build failure, not a runtime panic.
+    3. SQLite (`gorm.io/driver/sqlite`, an allowed GORM SQL driver, test-only) is
+       used so the GORM code runs in `go test` without a database server. One
+       connection (`SetMaxOpenConns(1)`) avoids "database is locked". The driver
+       needs cgo, which `go test -race` needs anyway.
+    4. `openSQLite(tb testing.TB, path string)` accepts the `testing.TB`
+       interface so the same helper is used by both `*testing.T` tests
+       (`newTestGorm`) and `*testing.B` benchmarks (`newBenchGorm`) without
+       code duplication.
+    5. Restart test: a new store instance on the same database file sees the
        link, the same `created_at`, and the same code for a repeated save.
-    4. Collision, exhaustion and race-on-URL paths are tested with an injected
+    6. Collision, exhaustion and race-on-URL paths are tested with an injected
        code generator and by calling `tryInsert` twice for the same URL.
+    7. **GormStore benchmarks** (`BenchmarkGormGet`, `BenchmarkGormSaveExisting`,
+       `BenchmarkGormSaveNew` in `bench_test.go`) quantify the ORM + SQLite
+       overhead versus the in-memory store. They run single-goroutine
+       (`b.Loop()`) to avoid SQLite's serialised connection masking other costs.
+       Representative numbers on this machine: `BenchmarkGormGet` ~42 µs vs
+       `BenchmarkMemoryGet` ~55 ns — the ORM + file I/O is ~760× slower than
+       the mutex-protected map, confirming that the persistent store is suitable
+       for durability, not for latency-critical hot paths without a cache.
 - **Limitations (accepted).** `Store` methods take no `context.Context`, so a
   slow query is not cancelled when the HTTP client disconnects (the pool and
   server timeouts bound it). Pool limits are fixed (25 open, 5 idle, 30 min
