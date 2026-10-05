@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mosipamo/URL-Shortener.git/internal/store"
+	"github.com/mosipamo/URL-Shortener/internal/store"
 )
 
 func TestLogging(t *testing.T) {
@@ -34,10 +34,18 @@ func TestLogging(t *testing.T) {
 func TestLoggingDefaultStatus200(t *testing.T) {
 	var buf bytes.Buffer
 	h := Logging(log.New(&buf, "", 0), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("hi"))
+		_, _ = w.Write([]byte("hi")) // never calls WriteHeader
 	}))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 	if !strings.Contains(buf.String(), "200 OK") {
 		t.Errorf("want 200 OK in %q", buf.String())
+	}
+}
+
+func TestStatusRecorderUnwrap(t *testing.T) {
+	rec := httptest.NewRecorder()
+	sr := &statusRecorder{ResponseWriter: rec, status: http.StatusOK}
+	if sr.Unwrap() != http.ResponseWriter(rec) {
+		t.Fatal("Unwrap must return the underlying writer")
 	}
 }

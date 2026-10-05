@@ -1,6 +1,6 @@
 package httpapi
 
-import "github.com/mosipamo/URL-Shortener.git/internal/store"
+import "github.com/mosipamo/URL-Shortener/internal/store"
 
 type fakeStore struct {
 	saveFn func(string) (string, error)
@@ -18,4 +18,5 @@ func (f fakeStore) Get(c string) (store.Link, error) {
 var (
 	_ Store = fakeStore{}
 	_ Store = (*store.Memory)(nil)
+	_ Store = (*store.GormStore)(nil)
 )

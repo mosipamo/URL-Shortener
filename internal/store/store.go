@@ -17,9 +17,10 @@ var (
 )
 
 const (
-	alphabet   = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-	codeLength = 7
-	maxRetries = 10
+	alphabet     = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	codeLength   = 7
+	maxRetries   = 10
+	MaxURLLength = 2048
 )
 
 type Link struct {
@@ -99,7 +100,11 @@ func Normalize(raw string) (string, error) {
 	if u.Path == "" {
 		u.Path = "/"
 	}
-	return u.String(), nil
+	out := u.String()
+	if len(out) > MaxURLLength {
+		return "", fmt.Errorf("%w: longer than %d bytes", ErrInvalidURL, MaxURLLength)
+	}
+	return out, nil
 }
 
 func randomCode() string {

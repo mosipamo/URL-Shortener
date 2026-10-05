@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mosipamo/URL-Shortener.git/internal/store"
+	"github.com/mosipamo/URL-Shortener/internal/store"
 )
 
 type Store interface {
