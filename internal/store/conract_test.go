@@ -10,17 +10,24 @@ import (
 	"time"
 
 	"github.com/mosipamo/URL-Shortener/internal/model"
+	"github.com/mosipamo/URL-Shortener/internal/repository"
 )
 
-// linkStore is the behaviour every store must have. The same contract runs
-// against Memory, SQLite-backed GORM, and (optionally) real PostgreSQL, which
-// proves the stores are interchangeable.
-type linkStore interface {
-	Save(longURL string) (string, error)
-	Get(code string) (model.Link, error)
-}
+// Compile-time proof that every concrete store satisfies the Repository
+// contract. A missing method or wrong signature causes a build failure here,
+// not a runtime panic deep inside a test.
+var (
+	_ repository.Repository = (*Memory)(nil)
+	_ repository.Repository = (*GormStore)(nil)
+)
 
-func runContract(t *testing.T, newStore func(t *testing.T) linkStore) {
+// runContract runs a common behavioural suite against any Repository
+// implementation. Running it against Memory, GORM+SQLite, and optionally real
+// PostgreSQL proves the three stores are interchangeable from the caller's
+// point of view.
+func runContract(t *testing.T, newStore func(t *testing.T) repository.Repository) {
+	t.Helper()
+
 	t.Run("save then get", func(t *testing.T) {
 		s := newStore(t)
 		code, err := s.Save("https://example.com/a")
@@ -45,7 +52,7 @@ func runContract(t *testing.T, newStore func(t *testing.T) linkStore) {
 	t.Run("same url same code", func(t *testing.T) {
 		s := newStore(t)
 		a, _ := s.Save("https://Example.com")
-		b, _ := s.Save("  https://example.com/ ") // equal after normalization
+		b, _ := s.Save("  https://example.com/ ") // equal after normalisation
 		if a == "" || a != b {
 			t.Fatalf("codes differ: %q vs %q", a, b)
 		}
@@ -63,7 +70,7 @@ func runContract(t *testing.T, newStore func(t *testing.T) linkStore) {
 		again, _ := s.Save("https://example.com/stable")
 		second, _ := s.Get(again)
 		if code != again || !first.CreatedAt.Equal(second.CreatedAt) {
-			t.Fatalf("repeat save changed the record: %v/%v vs %v/%v", code, first.CreatedAt, again, second.CreatedAt)
+			t.Fatalf("repeat save changed created_at: %v → %v", first.CreatedAt, second.CreatedAt)
 		}
 	})
 
@@ -89,7 +96,7 @@ func runContract(t *testing.T, newStore func(t *testing.T) linkStore) {
 		u := prefix + strings.Repeat("a", model.MaxURLLength-len(prefix))
 		code, err := s.Save(u)
 		if err != nil {
-			t.Fatalf("a URL of exactly %d bytes must be accepted: %v", model.MaxURLLength, err)
+			t.Fatalf("URL of exactly %d bytes must be accepted: %v", model.MaxURLLength, err)
 		}
 		if l, err := s.Get(code); err != nil || l.URL != u {
 			t.Fatalf("round trip failed: %v", err)
@@ -149,5 +156,5 @@ func runContract(t *testing.T, newStore func(t *testing.T) linkStore) {
 }
 
 func TestContractMemory(t *testing.T) {
-	runContract(t, func(t *testing.T) linkStore { return New() })
+	runContract(t, func(t *testing.T) repository.Repository { return New() })
 }
