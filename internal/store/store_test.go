@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -34,6 +35,7 @@ func TestSaveInvalid(t *testing.T) {
 		{"no host", "https://"},
 		{"port only", "http://:80"},
 		{"unparseable", "http://[::1"},
+		{"too long", "https://example.com/" + strings.Repeat("a", MaxURLLength)},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

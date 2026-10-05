@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/mosipamo/URL-Shortener.git/internal/store"
+	"github.com/mosipamo/URL-Shortener/internal/store"
 )
 
 func BenchmarkShorten(b *testing.B) {

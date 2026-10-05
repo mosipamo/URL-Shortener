@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mosipamo/URL-Shortener.git/internal/store"
+	"github.com/mosipamo/URL-Shortener/internal/store"
 )
 
 const base = "http://localhost:8080"
@@ -291,5 +291,13 @@ func TestRedirectUsesLinkURL(t *testing.T) {
 	rec := get(h, "/whatever")
 	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "https://example.org/target" {
 		t.Fatalf("status %d, Location %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+func TestShortenURLTooLong(t *testing.T) {
+	h := newHandler()
+	long := "https://example.com/" + strings.Repeat("a", store.MaxURLLength)
+	if rec := post(h, fmt.Sprintf(`{"url":%q}`, long)); rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 }

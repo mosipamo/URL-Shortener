@@ -138,3 +138,95 @@ real store never produces.
   returning 404. Memory use grows ~0.5 KB per new link (upper bound, from
   `B/op` of `BenchmarkSaveNew`), so ~1M links is roughly 0.5 GB. Bounding
   memory is the job of the persistent store in Part 4, not of deleting links.
+
+## Part 4
+
+- **Storage choice: GORM + PostgreSQL 16.** Links must survive restarts and
+  the database enforces the uniqueness rules, which a single mutex-protected
+  map or file cannot do once there is more than one server process. The
+  in-memory `Memory` store stays as the default (`STORE=memory`, or no `STORE` at all), so
+  `go run` works with nothing installed. `GormStore` implements the same
+  `httpapi.Store` interface (`Save`, `Get`); the handlers did not change.
+  A compile-time assertion in `fake_test.go` guards that.
+- **Choosing the store and configuration.** `STORE=memory|postgres` (default
+  `memory`) and `DATABASE_URL` are read from the environment, which can be
+  filled from a `.env` file in the working directory (see `.env.example`;
+  `.env` is git-ignored). Only `-addr` and `-base` are command-line flags, as
+  the spec requires. Go cannot read `.env` by itself, so `internal/envfile` is a
+  30-line standard-library loader instead of a third-party module (no new
+  entry in Dependencies). Real environment variables win over the file; a
+  missing file is fine. The DSN holds the password, so it is never logged or
+  put in error messages (tests check both the loader errors and a failed
+  connection). At startup the server connects, pings (5 s timeout) and fails
+  fast if the database is unreachable.
+- **Startup load.** The store keeps no in-memory copy: every read goes to
+  PostgreSQL, so nothing needs "loading". Startup connects, runs
+  `AutoMigrate` and logs how many links already exist (`postgres store
+ready: N existing links`). Restart tests prove earlier links resolve.
+- **Schema and migrations.** One table, model `linkRow`:
+    | Column                                                                       | Type            | Constraint                               |
+    | ---------------------------------------------------------------------------- | --------------- | ---------------------------------------- |
+    | `code`                                                                       | `varchar(16)`   | PRIMARY KEY                              |
+    | `url`                                                                        | `varchar(2048)` | NOT NULL, UNIQUE index (`idx_links_url`) |
+    | `created_at`                                                                 | `timestamptz`   | NOT NULL                                 |
+    | Migration is GORM `AutoMigrate` at startup: creates the table and indexes if |
+    | missing and adds missing columns, never drops or renames. That is enough for |
+    | one table; with schema changes over time I would switch to versioned         |
+    | migration files. Known limit: several replicas starting at the very same     |
+    | moment on an empty database could race to create the table.                  |
+- **URL length limit.** Normalized URLs longer than 2048 bytes are rejected as
+  `ErrInvalidURL` (HTTP 400), in `Normalize`, for both stores. PostgreSQL
+  cannot index values over ~2.7 KB, so without a limit a very long URL would
+  fail the INSERT with a 500.
+- **Idempotency with persistence.** The URL is normalized first (same rules as
+  Part 1), then `url` is looked up. If it exists, its code is returned (fast
+  path). Otherwise `INSERT ... ON CONFLICT DO NOTHING` runs and `RowsAffected`
+  decides: 1 means inserted; 0 means a unique constraint fired, so the URL is
+  looked up again: found means another request won the race and we return its
+  code, not found means our random code collided with a different URL and we
+  retry with a new code (10 tries, then `ErrCodeExhausted`, HTTP 500). The
+  database serializes conflicting inserts, so no Go mutex or transaction is
+  needed, and it also works across several server processes. Verified: 100
+  goroutines released at once against real PostgreSQL leave exactly one row
+  (test run 5 times). After a restart the same URL returns the same code
+  (`TestGormRestart`, and manually with the real binary).
+- **Persist before 201.** The handler answers only after `Save` returns, and
+  `Save` returns only after its single INSERT statement has been committed
+  (autocommit; no code path responds earlier).
+- **Crash safety and atomicity.** A single INSERT is one atomic transaction, so
+  there are no partial rows. PostgreSQL's default `synchronous_commit = on`
+  flushes the write-ahead log before COMMIT returns, so an acknowledged link
+  survives a crash of either process. If the server dies before the commit
+  there is no row and no 201. If it dies after the commit but before the
+  response, the client retries and idempotency returns the same code. The
+  compose file keeps data in a named volume.
+- **How `created_at` is stored.** `timestamptz`, set once by the application
+  (not a database default) in UTC, truncated to microseconds, which is
+  PostgreSQL's precision, so `Memory` and `GormStore` return identical values
+  and round trips compare equal. The injectable clock keeps tests
+  deterministic. A repeated `Save` never updates the row (DO NOTHING), so
+  `created_at` is always the first creation time. Returned as RFC3339 in UTC.
+- **Errors.** `gorm.ErrRecordNotFound` is translated to `ErrNotFound` with
+  `%w`; every other database error is wrapped with context, is not
+  `ErrNotFound` or `ErrInvalidURL`, and therefore becomes a 500 whose real
+  text is only logged (Part 2 mapping, unchanged). A test closes the database
+  and checks exactly that.
+- **Test strategy.**
+    1. One shared contract suite (`runContract`) runs against `Memory`, against
+       GORM + SQLite (always), and against real PostgreSQL (when
+       `TEST_DATABASE_URL` is set). Passing the same suite shows the stores are
+       interchangeable.
+    2. SQLite (`gorm.io/driver/sqlite`, an allowed GORM SQL driver, test-only) is
+       used so the GORM code runs in `go test` without a database server, which
+       the grader's machine may not have. The tests use one connection
+       (`SetMaxOpenConns(1)`) to avoid "database is locked". The driver needs
+       cgo, which `go test -race` needs anyway. `github.com/glebarez/sqlite` is a
+       pure-Go drop-in (one import line) if cgo is ever unavailable.
+    3. Restart test: a new store instance on the same database file sees the
+       link, the same `created_at`, and the same code for a repeated save.
+    4. Collision, exhaustion and race-on-URL paths are tested with an injected
+       code generator and by calling `tryInsert` twice for the same URL.
+- **Limitations (accepted).** `Store` methods take no `context.Context`, so a
+  slow query is not cancelled when the HTTP client disconnects (the pool and
+  server timeouts bound it). Pool limits are fixed (25 open, 5 idle, 30 min
+  lifetime). There is no read cache; adding one is a Part 5 topic.

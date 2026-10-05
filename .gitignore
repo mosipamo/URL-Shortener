@@ -7,3 +7,6 @@ coverage.out
 *.png
 Checklist.md
 store.go.RWMutex
+*.db
+*.sqlite
+.env
