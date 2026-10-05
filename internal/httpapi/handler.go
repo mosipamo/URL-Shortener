@@ -18,22 +18,17 @@ type server struct {
 	baseURL string
 }
 
-// New builds and returns a *gin.Engine (which satisfies http.Handler) with all
-// routes registered and the Logger middleware attached. The caller supplies a
-// *log.Logger so that tests can capture output without touching global state.
 func New(repo repository.Repository, baseURL string, l *log.Logger) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
-	r := gin.New()
-	r.Use(Logger(l))
+	router := gin.New()
+	router.Use(Logger(l))
 
 	s := &server{repo: repo, baseURL: strings.TrimRight(baseURL, "/")}
-	r.POST("/api/shorten", s.handleShorten)
-	r.GET("/api/v1/links/:code", s.handleLinkInfo)
-	r.GET("/:code", s.handleRedirect)
-	return r
+	router.POST("/api/shorten", s.handleShorten)
+	router.GET("/api/v1/links/:code", s.handleLinkInfo)
+	router.GET("/:code", s.handleRedirect)
+	return router
 }
-
-// ── request / response shapes ────────────────────────────────────────────────
 
 type shortenRequest struct {
 	URL string `json:"url"`
@@ -49,10 +44,7 @@ type linkResponse struct {
 	CreatedAt string `json:"created_at"`
 }
 
-// ── handlers ─────────────────────────────────────────────────────────────────
-
 func (s *server) handleShorten(c *gin.Context) {
-	// Limit request body to 1 MiB to prevent resource exhaustion.
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 
 	var req shortenRequest
@@ -94,11 +86,6 @@ func (s *server) handleLinkInfo(c *gin.Context) {
 	})
 }
 
-// ── error mapping ─────────────────────────────────────────────────────────────
-
-// writeStoreError maps domain sentinel errors to HTTP status codes and writes
-// a JSON {"error":"…"} body. Internal errors are logged but not echoed to the
-// client so that implementation details stay server-side.
 func (s *server) writeStoreError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, model.ErrInvalidURL):

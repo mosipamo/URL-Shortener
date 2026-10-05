@@ -25,8 +25,6 @@ const (
 	idleTimeout       = 60 * time.Second
 )
 
-// newServer wires the Gin engine (with logging middleware) into an http.Server
-// with all production timeouts configured.
 func newServer(addr, base string, repo repository.Repository) *http.Server {
 	return &http.Server{
 		Addr:              addr,

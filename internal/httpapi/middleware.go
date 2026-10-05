@@ -9,12 +9,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Logger returns a Gin middleware that logs one line per request:
-//
-//	201 Created     |    142µs | POST /api/shorten
-//
-// The query string is deliberately omitted to avoid leaking tokens or secrets
-// that clients sometimes put there.
 func Logger(l *log.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
