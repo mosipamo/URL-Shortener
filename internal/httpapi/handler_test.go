@@ -19,8 +19,6 @@ import (
 
 const base = "http://localhost:8080"
 
-// newHandler builds a handler backed by a real in-memory store, with logging
-// discarded so test output stays clean.
 func newHandler() http.Handler {
 	return New(store.New(), base, log.New(io.Discard, "", 0))
 }

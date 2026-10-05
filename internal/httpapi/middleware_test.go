@@ -15,7 +15,6 @@ import (
 
 func TestLogging(t *testing.T) {
 	var buf bytes.Buffer
-	// The logger is injected via New; no wrapper needed.
 	h := New(store.New(), base, log.New(&buf, "", 0))
 
 	h.ServeHTTP(httptest.NewRecorder(),
@@ -36,8 +35,6 @@ func TestLogging(t *testing.T) {
 
 func TestLoggingDefaultStatus200(t *testing.T) {
 	var buf bytes.Buffer
-	// Build a minimal engine with only the Logger middleware and one route that
-	// writes bytes without calling WriteHeader, so the default 200 must appear.
 	r := gin.New()
 	r.Use(Logger(log.New(&buf, "", 0)))
 	r.GET("/", func(c *gin.Context) {
@@ -49,7 +46,6 @@ func TestLoggingDefaultStatus200(t *testing.T) {
 	}
 }
 
-// Ensure the Logger middleware does not suppress errors set by c.Next().
 func TestLoggingCapturesErrorStatus(t *testing.T) {
 	var buf bytes.Buffer
 	r := gin.New()
@@ -63,7 +59,6 @@ func TestLoggingCapturesErrorStatus(t *testing.T) {
 	}
 }
 
-// Discarded logger is used in other tests; verify io.Discard works as a sink.
 func TestLoggingDiscard(t *testing.T) {
 	h := New(store.New(), base, log.New(io.Discard, "", 0))
 	rec := httptest.NewRecorder()

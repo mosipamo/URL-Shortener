@@ -6,9 +6,6 @@ import (
 	"testing"
 )
 
-// ── Memory benchmarks ─────────────────────────────────────────────────────────
-// These measure the in-memory store (sync.Mutex + map) with no I/O overhead.
-
 func BenchmarkMemoryGet(b *testing.B) {
 	s := New()
 	code, _ := s.Save("https://example.com/x")
@@ -54,8 +51,6 @@ func BenchmarkMemorySaveNew(b *testing.B) {
 	})
 }
 
-// BenchmarkMemoryMixed models a realistic URL-shortener workload where
-// redirects (reads) far outnumber new shortenings (writes).
 func BenchmarkMemoryMixed(b *testing.B) {
 	for _, tc := range []struct {
 		name       string
@@ -85,18 +80,11 @@ func BenchmarkMemoryMixed(b *testing.B) {
 	}
 }
 
-// ── GormStore benchmarks (SQLite) ─────────────────────────────────────────────
-// These measure the GORM layer + SQLite I/O. They are intentionally slower
-// than the Memory benchmarks — the goal is to quantify the ORM overhead and
-// see whether SQLite's serialised writes become a bottleneck.
-// In production, PostgreSQL with a real connection pool replaces SQLite.
-
 func BenchmarkGormGet(b *testing.B) {
 	s := newBenchGorm(b)
 	code, _ := s.Save("https://example.com/x")
 	b.ReportAllocs()
 	b.ResetTimer()
-	// SQLite is serialised (MaxOpenConns=1); a single goroutine avoids lock contention.
 	for b.Loop() {
 		if _, err := s.Get(code); err != nil {
 			b.Fatal(err)

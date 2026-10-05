@@ -10,4 +10,4 @@ store.go.RWMutex
 *.db
 *.sqlite
 .env
-repomix-output.xml
+*.exe

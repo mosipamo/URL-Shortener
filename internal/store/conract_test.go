@@ -13,18 +13,11 @@ import (
 	"github.com/mosipamo/URL-Shortener/internal/repository"
 )
 
-// Compile-time proof that every concrete store satisfies the Repository
-// contract. A missing method or wrong signature causes a build failure here,
-// not a runtime panic deep inside a test.
 var (
 	_ repository.Repository = (*Memory)(nil)
 	_ repository.Repository = (*GormStore)(nil)
 )
 
-// runContract runs a common behavioural suite against any Repository
-// implementation. Running it against Memory, GORM+SQLite, and optionally real
-// PostgreSQL proves the three stores are interchangeable from the caller's
-// point of view.
 func runContract(t *testing.T, newStore func(t *testing.T) repository.Repository) {
 	t.Helper()
 
@@ -52,7 +45,7 @@ func runContract(t *testing.T, newStore func(t *testing.T) repository.Repository
 	t.Run("same url same code", func(t *testing.T) {
 		s := newStore(t)
 		a, _ := s.Save("https://Example.com")
-		b, _ := s.Save("  https://example.com/ ") // equal after normalisation
+		b, _ := s.Save("  https://example.com/ ")
 		if a == "" || a != b {
 			t.Fatalf("codes differ: %q vs %q", a, b)
 		}
@@ -108,7 +101,7 @@ func runContract(t *testing.T, newStore func(t *testing.T) repository.Repository
 		const n = 50
 		codes := make([]string, n)
 		var wg sync.WaitGroup
-		for i := 0; i < n; i++ {
+		for i := range n {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
@@ -132,7 +125,7 @@ func runContract(t *testing.T, newStore func(t *testing.T) repository.Repository
 		const n = 50
 		codes := make(chan string, n)
 		var wg sync.WaitGroup
-		for i := 0; i < n; i++ {
+		for i := range n {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()

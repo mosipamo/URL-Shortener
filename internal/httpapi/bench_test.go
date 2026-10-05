@@ -65,8 +65,6 @@ func BenchmarkRedirectHandlerOnly(b *testing.B) {
 	})
 }
 
-// BenchmarkShortenWithRealStore benchmarks the full shorten path including
-// store normalisation and code generation.
 func BenchmarkShortenWithRealStore(b *testing.B) {
 	h := New(store.New(), base, log.New(io.Discard, "", 0))
 	b.ReportAllocs()

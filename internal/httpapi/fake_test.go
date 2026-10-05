@@ -6,9 +6,6 @@ import (
 	"github.com/mosipamo/URL-Shortener/internal/store"
 )
 
-// fakeStore is an in-test stub that satisfies repository.Repository.
-// Individual test cases inject saveFn / getFn to force any result, including
-// errors that the real store would never produce in unit tests.
 type fakeStore struct {
 	saveFn func(string) (string, error)
 	getFn  func(string) (model.Link, error)
