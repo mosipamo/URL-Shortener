@@ -5,7 +5,7 @@ URL shortener in Go.
 
 ## Run
 
-    go run ./cmd/server                      # in memory: data is lost on restart
+<!--    go run ./cmd/server                      # in memory: data is lost on restart --> 
     go run ./cmd/server -addr :9000 -base http://localhost:9000
 
 | Flag    | Default                 | Meaning                          |
