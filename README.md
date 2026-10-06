@@ -70,7 +70,7 @@ shorten. Covered by tests in `internal/store` and `internal/httpapi`.
 
     gofmt -l . && go vet ./... && go test -v -race ./...
     go test -v -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | tail -n1
-    # total: (statements) 85.2%
+    # total: (statements) 81.2%
 
 In Windows cmd there is no `tail`: run `go tool cover -func=coverage.out` and read the last line.
 
@@ -99,19 +99,19 @@ go test -run='^$' -bench=. -benchmem ./...
 
 Selected benchmark results:
 
-| Benchmark                      |   ns/op |  B/op | allocs/op | Notes                                              |
-| ------------------------------ | ------: | ----: | --------: | -------------------------------------------------- |
-| `BenchmarkRedirect-16`         |    1801 |  6498 |        30 | Full Gin redirect handler path, parallel benchmark |
-| `BenchmarkShorten-16`          |    3407 |  7664 |        40 | Full shorten handler path, parallel benchmark      |
-| `BenchmarkMemoryGet-16`        |   50.05 |     0 |         0 | In-memory lookup under synchronization             |
-| `BenchmarkMemorySaveNew-16`    |    1199 |   675 |         5 | New in-memory link                                 |
-| `BenchmarkGormGet-16`          |   41296 |  3599 |        62 | GORM + SQLite lookup                               |
-| `BenchmarkGormSaveExisting-16` |   40309 |  3799 |        64 | Existing-link persistence                          |
-| `BenchmarkGormSaveNew-16`      | 2044194 | 10134 |       130 | New-link persistence                               |
+| Benchmark                      |     ns/op |  B/op | allocs/op | Notes                                              |
+| ------------------------------ | --------: | ----: | --------: | -------------------------------------------------- |
+| `BenchmarkRedirect-16`         |      8616 |  6500 |        30 | Full Gin redirect handler path, parallel benchmark |
+| `BenchmarkShorten-16`          |     16940 |  7616 |        40 | Full shorten handler path, parallel benchmark      |
+| `BenchmarkMemoryGet-16`        |     160.6 |     0 |         0 | In-memory lookup under synchronization             |
+| `BenchmarkMemorySaveNew-16`    |      2580 |   646 |         5 | New in-memory link                                 |
+| `BenchmarkGormGet-16`          |    194129 |  3599 |        62 | GORM + SQLite lookup                               |
+| `BenchmarkGormSaveExisting-16` |    190765 |  3799 |        64 | Existing-link persistence                          |
+| `BenchmarkGormSaveNew-16`      |   3340094 | 10135 |       129 | New-link persistence                               |
 
-The in-memory lookup is extremely fast compared with the full HTTP redirect path: approximately 50 ns versus 1.8 µs in these benchmarks. This shows that most of the redirect benchmark cost comes from the HTTP/Gin request path rather than the basic in-memory map lookup.
+The in-memory lookup is extremely fast compared with the full HTTP redirect path: approximately 160 ns versus 8.6 µs in these benchmarks. This shows that most of the redirect benchmark cost comes from the HTTP/Gin request path rather than the basic in-memory map lookup.
 
-`BenchmarkGormGet` is approximately 825× slower than `BenchmarkMemoryGet` in this benchmark environment. This difference is expected because the GORM benchmark includes ORM processing and SQLite database I/O, while the memory benchmark performs only an in-memory lookup. In production, PostgreSQL is used instead of SQLite and connections are managed through a database connection pool.
+`BenchmarkGormGet` is approximately 1200× slower than `BenchmarkMemoryGet` in this benchmark environment. This difference is expected because the GORM benchmark includes ORM processing and SQLite database I/O, while the memory benchmark performs only an in-memory lookup. In production, PostgreSQL is used instead of SQLite and connections are managed through a database connection pool.
 
 ### CPU profiling
 
@@ -124,9 +124,9 @@ go tool pprof -top cpu.out
 
 The profile shows substantial runtime overhead from synchronization, scheduling, memory allocation, and garbage collection. This is expected in a parallel HTTP benchmark (`BenchmarkRedirect-16`), where multiple goroutines execute the handler concurrently.
 
-Application-level functions such as Gin request handling, middleware, redirect rendering, and `handleRedirect` appear in the profile, while a significant portion of cumulative CPU time is spent inside the Go runtime. The benchmark also reports 6498 B/op and 30 allocations/op for the full redirect path, indicating that allocation and garbage-collection overhead are relevant areas for further optimization if higher throughput is required.
+Application-level functions such as Gin request handling, middleware, redirect rendering, and `handleRedirect` appear in the profile, while a significant portion of cumulative CPU time is spent inside the Go runtime. The benchmark also reports 6485 B/op and 30 allocations/op for the full redirect path, indicating that allocation and garbage-collection overhead are relevant areas for further optimization if higher throughput is required.
 
-**Profiling insight:** the CPU profile shows that a significant portion of the benchmark time is spent in Go runtime operations such as scheduling, synchronization, memory allocation, and garbage collection. In particular, `runtime.mallocgc` accounts for about 0.64% flat CPU time and 20.55% cumulative CPU time in this profile. The full redirect benchmark reports approximately 6.5 KB of allocations and 30 allocations per operation. This indicates that allocation and runtime overhead are relevant areas for further optimization. The profile does not indicate that the store lock is the primary bottleneck.
+**Profiling insight:** the CPU profile shows that most of the benchmark time is spent in Go runtime operations — scheduling, synchronization, allocation and garbage collection. In particular, `runtime.mallocgc` accounts for about 24% cumulative CPU time, `httptest.NewRequest` (benchmark harness, not server code) about 21%, `gin.(*Engine).ServeHTTP` about 21%, and `httpapi.(*server).handleRedirect` about 14%. The top flat entries are all runtime: `runtime.preemptM` (11.7%), `runtime.runqgrab` (10.3%) and `runtime.semasleep` (9.4%), i.e. goroutine preemption and parking under 16-way contention. The full redirect benchmark reports approximately 6.5 KB of allocations and 30 allocations per operation. This indicates that allocation and runtime overhead are relevant areas for further optimization, and the profile does not indicate that the store lock is the primary bottleneck.
 
 I also benchmarked `Mutex` against `RWMutex` and kept `Mutex`: `RWMutex` only wins in purely read-heavy loops and loses its advantage when creates are mixed in. The details are documented in `Decisions.md`, Part 3.
 
