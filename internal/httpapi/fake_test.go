@@ -19,7 +19,6 @@ func (f fakeStore) Get(c string) (model.Link, error) {
 	return f.getFn(c)
 }
 
-// Compile-time assertions: every concrete store must satisfy repository.Repository.
 var (
 	_ repository.Repository = fakeStore{}
 	_ repository.Repository = (*store.Memory)(nil)

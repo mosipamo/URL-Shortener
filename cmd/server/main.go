@@ -9,7 +9,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/joho/godotenv"
 	"github.com/mosipamo/URL-Shortener/internal/envfile"
 	"github.com/mosipamo/URL-Shortener/internal/httpapi"
 	"github.com/mosipamo/URL-Shortener/internal/repository"
@@ -36,22 +35,19 @@ func newServer(addr, base string, repo repository.Repository) *http.Server {
 	}
 }
 
-// openStore builds the store selected by the STORE environment variable.
-// It returns the store and a function that releases its resources. The DSN
-// contains a password so it is never printed or included in error messages.
 func openStore(kind, dsn string) (repository.Repository, func() error, error) {
 	switch kind {
 	case "memory":
 		return store.New(), func() error { return nil }, nil
 	case "postgres":
 		if dsn == "" {
-			return nil, nil, errors.New("-store postgres needs -dsn or the DATABASE_URL environment variable")
+			return nil, nil, errors.New("-store postgres requires DATABASE_URL to be set in .env")
 		}
 		db, err := store.OpenPostgres(dsn)
 		if err != nil {
 			return nil, nil, err
 		}
-		g, err := store.NewGorm(db) // creates the table; earlier links are now available
+		g, err := store.NewGorm(db)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -74,20 +70,16 @@ func main() {
 
 	addr := flag.String("addr", defaultAddr, "listen address")
 	base := flag.String("base", defaultBase, "base URL used in short_url")
+	store := flag.String("store", "memory", "store kind (memory or postgres)")
 	flag.Parse()
 
-	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Fatalf("load .env: %v", err)
-	}
-
-	kind := os.Getenv("STORE")
-	repo, closeStore, err := openStore(kind, os.Getenv("DATABASE_URL"))
+	repo, closeStore, err := openStore(*store, os.Getenv("DATABASE_URL"))
 	if err != nil {
 		log.Fatalf("store: %v", err)
 	}
 
 	srv := newServer(*addr, *base, repo)
-	log.Printf("listening on %s (base %s, store %s)", *addr, *base, kind)
+	log.Printf("listening on %s (base %s, store %s)", *addr, *base, *store)
 	err = srv.ListenAndServe()
 	if cerr := closeStore(); cerr != nil {
 		log.Printf("closing store: %v", cerr)

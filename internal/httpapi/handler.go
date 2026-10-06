@@ -27,6 +27,7 @@ func New(repo repository.Repository, baseURL string, l *log.Logger) *gin.Engine 
 	router.POST("/api/shorten", s.handleShorten)
 	router.GET("/api/v1/links/:code", s.handleLinkInfo)
 	router.GET("/:code", s.handleRedirect)
+	router.HEAD("/:code", s.handleRedirect)
 	return router
 }
 
