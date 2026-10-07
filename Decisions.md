@@ -58,55 +58,75 @@ type Repository interface {
 
 - **Locking choice: `sync.Mutex`** (one lock; `Save` and `Get` both take it;
   `Save` does lookup → generate → insert in one critical section, as in
-  Part 1). I also built an `RWMutex` version (read lock for `Get` and for the
-  `Save` lookup fast path, write lock plus a second lookup before creating a
-  code) and benchmarked both on the same machine. It was correct (race tests
-  passed) but not faster for a realistic workload, so I reverted to `Mutex`.
-- **Measurements** (Intel i5-13450HX, 16 threads, `-count=5`, median ns/op,
-  lower is better; the Mutex/RWMutex comparison was run on Go 1.22 against the
-  same `Memory` benchmarks, and the repo now builds with Go 1.25 — absolute
-  store numbers drift between toolchains and machine load, so read the table
-  for the *relative* Mutex-vs-RWMutex result, not as current absolutes).
-  Benchmark names use the current `Memory` prefix (e.g. `BenchmarkMemoryGet`,
-  `BenchmarkMemorySaveExisting`, `BenchmarkMemorySaveNew`, `BenchmarkMemoryMixed`).
-  Read-only and create paths:
+  Part 1). A `sync.RWMutex` variant, `MemoryRW`, is kept in the repo
+  (`internal/store/memory_rwmutex.go`) purely so the comparison below is
+  reproducible; it is covered by the same contract suite. `Memory` (Mutex) is
+  the store the server actually uses.
+- **Measurements.** Intel i5-13450HX (16 logical CPUs), `-count=6`,
+  `-benchtime=2s`, median ns/op, lower is better. Run the comparison with:
 
-    | Benchmark (`Memory` prefix)                                                 |    Threads |              Mutex |            RWMutex | Result                            |
-    | --------------------------------------------------------------------------- | ---------: | -----------------: | -----------------: | --------------------------------- |
-    | `Get`                                                                       |          1 |               14.4 |               15.5 | ~equal                            |
-    | `Get`                                                                       |          4 |               30.9 |               48.2 | Mutex faster                      |
-    | `Get`                                                                       |         16 |               53.4 |               38.8 | RWMutex 27% faster                |
-    | `SaveExisting`                                                              |          4 |                109 |                 92 | RWMutex 15% faster                |
-    | `SaveExisting`                                                              |         16 |                165 |               84.5 | RWMutex 49% faster                |
-    | `SaveNew`                                                                   | 1 / 4 / 16 | 1954 / 1782 / 1811 | 2052 / 1870 / 1887 | equal (noise)                     |
-    | Mixed read/create workloads (`BenchmarkMemoryMixed`, one create per N ops): |
-    | Reads                                                                       |    Threads |              Mutex |            RWMutex | Result                            |
-    | ------:                                                                     |  --------: |            ------: |          --------: | --------                          |
-    | 90%                                                                         |          4 |                185 |                305 | Mutex faster (RW +65%)            |
-    | 90%                                                                         |         16 |                191 |                292 | Mutex faster (RW +53%)            |
-    | 99%                                                                         |          4 |               53.1 |               54.0 | tie                               |
-    | 99%                                                                         |         16 |               63.2 |               77.0 | Mutex faster (RW +22%)            |
-    | 99.9%                                                                       |          4 |               40.2 |               47.7 | Mutex faster (RW +19%)            |
-    | 99.9%                                                                       |         16 |               65.7 |               69.9 | Mutex faster (RW +6%, near noise) |
-    | Conclusion:                                                                 |
-    - `RWMutex` only wins when the workload is **100% reads** and many cores run
-      at once (`Get` and `SaveExisting` at 16 threads). As soon as even 1 in
-      1,000 operations is a create, the advantage disappears and `Mutex` is
-      equal or faster. A URL shortener always has some creates, so that
-      pure-read case does not describe a running service.
-    - A likely cause (not verified by profiling): a waiting writer makes new
-      readers park and wake, which costs more than a plain `Mutex` queue; and
-      `RWMutex.RLock` still updates a shared counter, so readers contend on a
-      cache line anyway.
-    - Caveat: `BenchmarkMixed` uses one shared atomic counter, which adds
-      contention to both versions, so absolute numbers are inflated. The
-      comparison between the two is still fair.
-    - All differences are at most ~100 ns, against a full redirect of ~8.6 µs
-      after the Gin refactor (see profile below), so end-to-end the choice is
-      within a couple of percent. With equal performance, the simpler lock wins.
-    - If the store ever became a measured bottleneck, the next steps would be
-      sharding the maps by code or an `atomic.Pointer` to an immutable map for
-      reads, not `RWMutex`.
+    ```text
+    go test -run='^$' -bench=BenchmarkLockCompare -benchmem -count=6 -benchtime=2s ./internal/store/
+    ```
+
+    Read-only and create paths (`BenchmarkLockCompare{Get,SaveExisting,SaveNew}`):
+
+    | Benchmark      | Threads | Mutex | RWMutex | Result                          |
+    | -------------- | ------: | ----: | ------: | ------------------------------- |
+    | `Get`          |       1 |  58.6 |    63.7 | ~equal (Mutex slightly ahead)   |
+    | `Get`          |       4 | 100.0 |   156.7 | Mutex faster (~36%)             |
+    | `Get`          |      16 | 161.5 |   147.5 | RWMutex ~9% faster (near noise) |
+    | `SaveExisting` |      16 | 330.0 |   390.0 | ~equal, noisy (read fast path)  |
+    | `SaveNew`      |      16 | ~2900 |   ~2800 | equal (noise)                   |
+
+    Mixed read/create workloads (`BenchmarkLockCompareMixed`, one create per N ops),
+    16 threads, settled values:
+
+    | Reads | Mutex | RWMutex | Result                |
+    | ----: | ----: | ------: | --------------------- |
+    |   90% | 120.5 |    58.5 | RWMutex ~2× faster    |
+    |   99% |  74.5 |    59.5 | RWMutex ~1.25× faster |
+    | 99.9% |  70.3 |    59.5 | RWMutex ~1.2× faster  |
+
+    Notes: (read these before trusting any single cell):
+    - The whole series shows clear **thermal throttling**: absolute ns/op rise
+      through a run (e.g. `Get` Mutex-16 drifts 147 → 169 ns, `Get` Mutex-4
+      38 → 107 ns). Run one benchmark at a time and discard the first
+      `-count` to reduce this.
+    - **RWMutex needs a warm-up** in the mixed benchmark: its first iteration
+      is cold at ~210–256 ns and only then settles to ~57–60 ns, while Mutex
+      is stable from the start. That is why the same command produced _two
+      opposite_ mixed results: an earlier run had RWMutex at ~180 ns at 90%
+      reads, a later run had it at ~58 ns. The table uses the settled values.
+    - `SaveExisting` and `SaveNew` are within noise of each other in both
+      variants; `Normalize` (`url.Parse` + `String`) dominates and the lock
+      is not the cost there.
+
+    Conclusion: **the two locks are effectively a wash.** `RWMutex` wins pure
+    reads only at high thread counts (~9% at 16, within noise) and is _behind_ at
+    4 threads (~36%); it does not win the write paths. The mixed case flips with
+    warm-up — one run of the same benchmark had `RWMutex` ~2× ahead, another had
+    it behind — and the run-to-run spread (~58 vs ~180 ns at 90% reads) is larger
+    than the difference between the two locks. Across all cases, neither lock
+    wins reliably. `Mutex` is kept anyway, for reasons that do not depend on
+    winning the micro-benchmark:
+    1. **It does not matter end-to-end.** The store lookup is ~60–160 ns,
+       while a full redirect through Gin is ~8.6 µs and a create is ~17 µs
+       (see profile below); the lock is well under 1% of each request.
+       Even a 2× gain on the lookup is invisible at the HTTP layer.
+    2. **It is simpler and has one correct critical section.** `Save`
+       takes the lock once and does lookup → generate → insert atomically.
+       The RWMutex `Save` needs a read-lock probe, an unlock, then a write
+       lock and a _second_ lookup (double-checked locking), which is more
+       code and easier to get subtly wrong.
+    3. **The results are machine-sensitive.** The same
+       binary produced very different mixed numbers across runs. Choosing
+       the simpler lock avoids betting on a difference that does not
+       reproduce reliably.
+       If the store ever became a _measured_ bottleneck in production, the
+       honest next step is re-running this benchmark on the deployment's Go
+       version and hardware — and then sharding the maps by code or using an
+       `atomic.Pointer` to an immutable map, which beat both locks here.
 
 - **Where the time actually goes (profile of the redirect benchmark).** A
   store `Get` is ~150–165 ns, while a full redirect through the Gin handler is

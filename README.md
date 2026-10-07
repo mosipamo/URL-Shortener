@@ -70,7 +70,7 @@ shorten. Covered by tests in `internal/store` and `internal/httpapi`.
 
     gofmt -l . && go vet ./... && go test -v -race ./...
     go test -v -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | tail -n1
-    # total: (statements) 81.2%
+    # total: (statements) 82.0%
 
 In Windows cmd there is no `tail`: run `go tool cover -func=coverage.out` and read the last line.
 
@@ -128,6 +128,48 @@ Application-level functions such as Gin request handling, middleware, redirect r
 
 **Profiling insight:** the CPU profile shows that most of the benchmark time is spent in Go runtime operations — scheduling, synchronization, allocation and garbage collection. In particular, `runtime.mallocgc` accounts for about 24% cumulative CPU time, `httptest.NewRequest` (benchmark harness, not server code) about 21%, `gin.(*Engine).ServeHTTP` about 21%, and `httpapi.(*server).handleRedirect` about 14%. The top flat entries are all runtime: `runtime.preemptM` (11.7%), `runtime.runqgrab` (10.3%) and `runtime.semasleep` (9.4%), i.e. goroutine preemption and parking under 16-way contention. The full redirect benchmark reports approximately 6.5 KB of allocations and 30 allocations per operation. This indicates that allocation and runtime overhead are relevant areas for further optimization, and the profile does not indicate that the store lock is the primary bottleneck.
 
-I also benchmarked `Mutex` against `RWMutex` and kept `Mutex`: `RWMutex` only wins in purely read-heavy loops and loses its advantage when creates are mixed in. The details are documented in `Decisions.md`, Part 3.
+### Mutex vs RWMutex
+
+`Memory` uses a single `sync.Mutex`. A `sync.RWMutex` variant, `MemoryRW`
+(`internal/store/memory_rwmutex.go`), is kept only so the comparison is
+reproducible (it is covered by the same contract tests and is not used by the
+server). Measured on an i5-13450HX with **Go 1.25**, `-count=6 -benchtime=2s`,
+median ns/op, lower is better:
+
+```text
+go test -run='^$' -bench=BenchmarkLockCompare -benchmem -count=6 -benchtime=2s ./internal/store/
+```
+
+| Benchmark        | Threads | Mutex | RWMutex | Result                          |
+| ---------------- | ------: | ----: | ------: | ------------------------------- |
+| `Get`            |       1 |  58.6 |    63.7 | ~equal                          |
+| `Get`            |       4 | 100.0 |   156.7 | Mutex faster (~36%)             |
+| `Get`            |      16 | 161.5 |   147.5 | RWMutex ~9% faster (near noise) |
+| `SaveExisting`   |      16 | 330.0 |   390.0 | ~equal, noisy                   |
+| `SaveNew`        |      16 | ~2900 |   ~2800 | equal (noise)                   |
+
+Mixed read/create workloads (one create per N ops), 16 threads, warm values:
+
+| Reads | Mutex | RWMutex | Result                |
+| ----: | ----: | ------: | --------------------- |
+|   90% | 120.5 |    58.5 | RWMutex ~2× faster    |
+|   99% |  74.5 |    59.5 | RWMutex ~1.25× faster |
+| 99.9% |  70.3 |    59.5 | RWMutex ~1.2× faster  |
+
+Caveats: the numbers show clear thermal throttling (ns/op drifts up through a
+run) and `RWMutex` needs a warm-up in the mixed benchmark (first iteration
+~210 ns, then ~58 ns), so the same command can produce opposite mixed results
+across runs.
+
+**Conclusion: the two locks are effectively a wash.** `RWMutex` wins pure reads
+only at high thread counts (~9% at 16, within noise) and is *behind* at 4
+threads (~36%); it does not win the write paths. The mixed case flips with
+warm-up — one run of the same benchmark had `RWMutex` ~2× ahead, another had it
+behind — and the run-to-run spread (~58 vs ~180 ns at 90% reads) is larger than
+the difference between the two locks. Across all cases, neither lock wins
+reliably. Since the whole lookup is ~60–160 ns against a ~8.6 µs redirect and
+~17 µs create, the lock is well under 1% of a request, so the simpler `Mutex`
+(one atomic critical section, no double-checked locking) is kept. The full
+analysis is in `Decisions.md`, Part 3.
 
 Design choices are in [Decisions.md](Decisions.md).

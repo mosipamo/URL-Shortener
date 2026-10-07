@@ -15,6 +15,7 @@ import (
 
 var (
 	_ repository.Repository = (*Memory)(nil)
+	_ repository.Repository = (*MemoryRW)(nil)
 	_ repository.Repository = (*GormStore)(nil)
 )
 
@@ -150,4 +151,10 @@ func runContract(t *testing.T, newStore func(t *testing.T) repository.Repository
 
 func TestContractMemory(t *testing.T) {
 	runContract(t, func(t *testing.T) repository.Repository { return New() })
+}
+
+func TestContractMemoryRW(t *testing.T) {
+	runContract(t, func(t *testing.T) repository.Repository {
+		return NewRW()
+	})
 }
