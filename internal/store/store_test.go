@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/mosipamo/URL-Shortener/internal/model"
 )
 
 func TestSaveAndGet(t *testing.T) {
@@ -35,11 +37,11 @@ func TestSaveInvalid(t *testing.T) {
 		{"no host", "https://"},
 		{"port only", "http://:80"},
 		{"unparseable", "http://[::1"},
-		{"too long", "https://example.com/" + strings.Repeat("a", MaxURLLength)},
+		{"too long", "https://example.com/" + strings.Repeat("a", model.MaxURLLength)},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := New().Save(tc.in); !errors.Is(err, ErrInvalidURL) {
+			if _, err := New().Save(tc.in); !errors.Is(err, model.ErrInvalidURL) {
 				t.Fatalf("err = %v, want ErrInvalidURL", err)
 			}
 		})
@@ -47,7 +49,7 @@ func TestSaveInvalid(t *testing.T) {
 }
 
 func TestGetNotFound(t *testing.T) {
-	if _, err := New().Get("nope"); !errors.Is(err, ErrNotFound) {
+	if _, err := New().Get("nope"); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
@@ -105,7 +107,7 @@ func TestCollisionExhausted(t *testing.T) {
 	if _, err := s.Save("https://one.example"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Save("https://two.example"); !errors.Is(err, ErrCodeExhausted) {
+	if _, err := s.Save("https://two.example"); !errors.Is(err, model.ErrCodeExhausted) {
 		t.Fatalf("err = %v, want ErrCodeExhausted", err)
 	}
 	if _, err := s.Save("https://one.example"); err != nil {

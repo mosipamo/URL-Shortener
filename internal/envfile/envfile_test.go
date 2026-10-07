@@ -11,7 +11,6 @@ import (
 func TestParse(t *testing.T) {
 	in := `
 # a comment
-STORE=postgres
 export ADDR=:8080
 DATABASE_URL=postgres://u:p#ss=1@localhost:5432/db?sslmode=disable
 QUOTED_D="hello world"
@@ -25,9 +24,8 @@ MISMATCH="open
 		t.Fatal(err)
 	}
 	want := map[string]string{
-		"STORE":        "postgres",
 		"ADDR":         ":8080",
-		"DATABASE_URL": "postgres://u:p#ss=1@localhost:5432/db?sslmode=disable", // '#' and '=' kept
+		"DATABASE_URL": "postgres://u:p#ss=1@localhost:5432/db?sslmode=disable",
 		"QUOTED_D":     "hello world",
 		"QUOTED_S":     "single # kept",
 		"EMPTY":        "",
@@ -39,22 +37,19 @@ MISMATCH="open
 	}
 }
 
-// Windows editors (older Notepad) can start the file with a UTF-8 BOM; without
-// handling it the first key would be "\uFEFFSTORE" and silently never match.
 func TestParseUTF8BOMAndWindowsLineEndings(t *testing.T) {
-	got, err := Parse(strings.NewReader("\uFEFFSTORE=postgres\r\nDATABASE_URL=postgres://u:p@h/db\r\n"))
+	got, err := Parse(strings.NewReader("\uFEFFDATABASE_URL=postgres://u:p@h/db\r\nADDR=:8080\r\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"STORE": "postgres", "DATABASE_URL": "postgres://u:p@h/db"}
+	want := map[string]string{"DATABASE_URL": "postgres://u:p@h/db", "ADDR": ":8080"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v, want %#v", got, want)
 	}
 }
 
-// PowerShell 5's `>` writes UTF-16. That must be a clear error, not garbage keys.
 func TestParseRejectsUTF16(t *testing.T) {
-	utf16 := "\xff\xfeS\x00T\x00O\x00R\x00E\x00=\x00p\x00"
+	utf16 := "\xff\xfeA\x00D\x00D\x00R\x00=\x00p\x00"
 	_, err := Parse(strings.NewReader(utf16))
 	if err == nil || !strings.Contains(err.Error(), "UTF-8") || !strings.Contains(err.Error(), "line 1") {
 		t.Fatalf("err = %v, want a clear 'save as UTF-8' error", err)
@@ -74,8 +69,6 @@ func TestParseErrorsDoNotLeakValues(t *testing.T) {
 }
 
 func TestLoad(t *testing.T) {
-	// t.Setenv registers cleanup that restores the original state, so the
-	// variables Load sets below do not leak into other tests.
 	t.Setenv("ENVFILE_TEST_NEW", "")
 	os.Unsetenv("ENVFILE_TEST_NEW")
 	t.Setenv("ENVFILE_TEST_EXISTING", "from-real-env")
@@ -113,7 +106,6 @@ func TestLoadInvalidFile(t *testing.T) {
 }
 
 func TestLoadUnreadablePath(t *testing.T) {
-	// A directory exists but cannot be read as a file.
 	if err := Load(t.TempDir()); err == nil {
 		t.Fatal("expected an error when the path is a directory")
 	}

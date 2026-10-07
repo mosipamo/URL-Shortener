@@ -2,122 +2,145 @@
 
 ## Dependencies
 
-None. The project uses only the Go standard library, with `net/http` for HTTP routing.
+There are **no** modules that require an entry here. Every module in `go.mod` is part of an explicitly allowed category:
+
+- `github.com/gin-gonic/gin` — the HTTP router and context framework used by `internal/httpapi` (refactor branch, replacing `net/http`'s `ServeMux`). The spec allows any web router/framework and says **not** to list it here.
+- `gorm.io/gorm` plus the SQL drivers `gorm.io/driver/postgres` and `gorm.io/driver/sqlite` — GORM and its SQL driver(s) for Part 4 persistence; the spec allows them and says **not** to list them here. SQLite is used only in tests.
+- All remaining entries are indirect (`// indirect`) or Gin's own transitive dependencies.
+
+`.env` loading is done by `internal/envfile`, a standard-library-only parser, so no third-party env library (e.g. `godotenv`) is used.
 
 ## Part 1
 
-- **When two URLs are considered "the same" (normalization).** Surrounding whitespace is trimmed, the scheme and host are lowercased, and an empty path is normalized to `/` (`https://Example.com` == `https://example.com/`). Other components are deliberately left unchanged because servers may treat them as different resources: path case, trailing slashes on non-empty paths (`/x` vs `/x/`), query parameter order, fragments, and default ports. The normalized URL is used both as the idempotency key and as the URL we redirect to.
+- **When two URLs are considered "the same" (normalization):** Surrounding whitespace is trimmed, the scheme and host are lowercased, and an empty path is normalized to `/` (`https://Example.com` == `https://example.com/`). Other components are deliberately left unchanged because servers may treat them as different resources: path case, trailing slashes on non-empty paths (`/x` vs `/x/`), query parameter order, fragments, and default ports. The normalized URL is used both as the idempotency key and as the URL we redirect to.
 
-- **How the same URL maps to the same code.** A second map, `byURL: longURL → code`, is maintained alongside `links: code → longURL`. `Save` checks `byURL` first and returns the existing code if the URL has already been shortened. This still returns HTTP 201, as required by the specification.
+- **How the same URL maps to the same code:** A second map, `byURL: longURL → code`, is maintained alongside `links: code → longURL`. `Save` checks `byURL` first and returns the existing code if the URL has already been shortened. This still returns HTTP 201, as required by the specification.
 
-- **How codes are generated (new URLs only).** Each new URL receives a 7-character random code using characters from `[0-9a-zA-Z]` and `crypto/rand`. Random bytes ≥ 248 are rejected to avoid modulo bias, ensuring that each character is equally likely. Codes are not sequential, so they cannot be enumerated simply by counting.
+- **How codes are generated (new URLs only):** Each new URL receives a 7-character random code using characters from `[0-9a-zA-Z]` and `crypto/rand`. Random bytes ≥ 248 are rejected to avoid modulo bias, ensuring that each character is equally likely. Codes are not sequential, so they cannot be enumerated simply by counting.
 
-- **Collision handling.** While holding the lock, if a generated code already exists in `links` and belongs to a different URL, another code is generated. This is retried up to 10 times, after which `ErrCodeExhausted` is returned (HTTP 500). With `62^7 ≈ 3.5 × 10^12` possible codes, this is practically unreachable in normal operation; the behavior is tested using an injected code generator. Therefore, distinct URLs never share the same code.
+- **Collision handling:** While holding the lock, if a generated code already exists in `links` and belongs to a different URL, another code is generated. This is retried up to 10 times, after which `ErrCodeExhausted` is returned (HTTP 500). With `62^7 ≈ 3.5 × 10^12` possible codes, this is practically unreachable in normal operation; the behavior is tested using an injected code generator. Therefore, distinct URLs never share the same code.
 
-- **Mutex type and locking strategy.** A single `sync.Mutex` is used. Both `Save` and `Get` acquire the lock. `Save` performs the lookup, code generation, and insertion within the same critical section, ensuring that concurrent requests for the same URL receive the same code. The use of `RWMutex` is deferred to Part 3, where it will be evaluated using benchmarks.
+- **Mutex type and locking strategy:** A single `sync.Mutex` is used. Both `Save` and `Get` acquire the lock. `Save` performs the lookup, code generation, and insertion within the same critical section, ensuring that concurrent requests for the same URL receive the same code. The use of `RWMutex` is deferred to Part 3, where it will be evaluated using benchmarks.
 
-- **Validation / SSRF.** A URL must be non-empty and parseable, use either the `http` or `https` scheme, and contain a host. The server never fetches the long URL; it only stores it and redirects clients to it.
+- **Validation / SSRF:** A URL must be non-empty and parseable, use either the `http` or `https` scheme, and contain a host. The server never fetches the long URL; it only stores it and redirects clients to it.
 
-- **Package layout.** `cmd/server` contains flags and application wiring, `internal/store` contains the domain logic (normalization, code generation, and maps), and `internal/httpapi` contains the HTTP handlers and declares the `Store` interface consumed by the handlers.
+- **Package layout:** `cmd/server` contains flags and application wiring. `internal/model` holds the domain types (`Link`, sentinel errors, `MaxURLLength`) shared across all layers. `internal/repository` declares the `Repository` interface consumed by the HTTP handlers. `internal/store` holds the `Memory` and `GormStore` implementations plus the `Normalize` utility. `internal/httpapi` wires Gin routes and handlers.
 
 ## Part 2
 
-- **`Store` interface location and methods.** Declared in `internal/httpapi`
-  (the consumer), not in `internal/store`:
+- **`Repository` interface location and methods.** Declared in `internal/repository` (a dedicated contract package), implemented by `internal/store.Memory` and `internal/store.GormStore`:
 
 ```go
-  type Store interface {
-      Save(longURL string) (code string, err error)
-      Get(code string) (store.Link, error)
-  }
+type Repository interface {
+    Save(rawURL string) (code string, err error)
+    Get(code string) (link model.Link, err error)
+}
 ```
 
-`store.Link{URL, CreatedAt}` is the shared data type. `Save` returns only the
-code; the handlers read `created_at` through `Get`. The in-memory `Memory`
-satisfies it implicitly (checked at compile time in `fake_test.go`); tests use
-a `fakeStore` with function fields to force any result, including errors the
-real store never produces.
+`model.Link{URL, CreatedAt}` is the shared domain type, defined in `internal/model` so it has no dependencies on either the store or the HTTP layer. `Save` returns only the code; handlers retrieve `created_at` through `Get`. Compile-time assertions guard that every concrete store satisfies the interface: in `internal/store/contract_test.go` (close to the implementations) and in `internal/httpapi/fake_test.go` (close to the consumer).
 
-- **Sentinel errors.** `store.ErrNotFound`, `store.ErrInvalidURL` (plus
-  `ErrCodeExhausted` for the practically unreachable collision case). The store
-  wraps them with context using `%w`, e.g. `get "abc": code not found`.
-- **How errors become status codes and bodies.** One function,
-  `writeStoreError`, used by every route, switches with `errors.Is`:
-    | Error                                                                        | Status | Body                                                                                             |
-    | ---------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------ |
-    | `ErrInvalidURL`                                                              | 400    | `{"error":"<store message>"}` (safe, tells the client what is wrong)                             |
-    | `ErrNotFound`                                                                | 404    | `{"error":"not found"}` (fixed text, so internal wrapping and the requested code are not echoed) |
-    | anything else                                                                | 500    | `{"error":"internal error"}`; the real error is only logged                                      |
-    | Malformed JSON is a handler-level 400 (`invalid JSON body`) because it never |
-    | reaches the store. All error bodies share the `{"error": "..."}` shape.      |
-- **`created_at`.** Set once, when the code is first created, in UTC from an
-  injectable clock (`Memory.now`) so tests are deterministic. Returned as
-  RFC3339 (`2026-01-15T12:00:00Z`), formatted explicitly because Go's default
-  `time.Time` JSON adds fractional seconds.
-- **Idempotency after the refactor.** `byURL` is unchanged and a repeated
-  `Save` returns the existing code without touching the stored `Link`, so
-  `created_at` stays the original. Tested in the store (advancing clock) and
-  over HTTP (`TestLinkInfoViaRealStoreAndIdempotency`).
-- **Routing.** `GET /api/v1/links/{code}` and `GET /{code}` never conflict in
-  mux (different segment counts), so the stdlib router is enough.
+- **Sentinel errors.** `model.ErrNotFound`, `model.ErrInvalidURL`, and `model.ErrCodeExhausted` live in `internal/model` so that neither the store implementations nor the HTTP layer need to import each other to compare errors. The store wraps them with `%w`, e.g. `get "abc": code not found`.
+- **How errors become status codes and bodies.** One method, `writeStoreError`, used by every Gin handler, switches with `errors.Is`:
+
+    | Error                                                                                                                                                     | Status | Body                                                                                   |
+    | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | -------------------------------------------------------------------------------------- |
+    | `ErrInvalidURL`                                                                                                                                           | 400    | `{"error":"<store message>"}` (safe, tells the client what is wrong)                   |
+    | `ErrNotFound`                                                                                                                                             | 404    | `{"error":"not found"}` (fixed text, so internal wrapping and the code are not echoed) |
+    | anything else                                                                                                                                             | 500    | `{"error":"internal error"}`; the real error is only logged                            |
+    | Malformed JSON is a handler-level 400 (`invalid JSON body`) because it never reaches the repository. All error bodies share the `{"error": "..."}` shape. |
+
+- **HTTP framework.** Gin (`github.com/gin-gonic/gin`) replaces the stdlib mux. Handlers receive a `*gin.Context` instead of `(http.ResponseWriter, *http.Request)` (I used stdlib mux in parts 1 to 4 and then I refactored it). `c.ShouldBindJSON` decodes the request body; `c.JSON` / `c.Redirect` write responses. Gin's radix-tree router resolves `GET /:code` vs `GET /api/v1/links/:code` without conflict because static path prefixes take priority over parameter wildcards.
+- **Logger middleware.** `httpapi.Logger(*log.Logger) gin.HandlerFunc` is a Gin middleware factory. It is injected into `New(repo, base, logger)` so tests can capture log output with `log.New(&buf, "", 0)` and production code passes `log.Default()`. The query string is omitted from log lines to prevent token/secret leakage.
+- **`created_at`.** Set once, when the code is first created, in UTC from an injectable clock (`Memory.now`) so tests are deterministic. Returned as RFC3339 (`2026-01-15T12:00:00Z`), formatted explicitly because Go's default `time.Time` JSON adds fractional seconds.
+- **Idempotency after the refactor.** `byURL` is unchanged and a repeated `Save` returns the existing code without touching the stored `Link`, so `created_at` stays the original. Tested in the store (advancing clock) and over HTTP (`TestLinkInfoViaRealStoreAndIdempotency`).
 
 ## Part 3
 
 - **Locking choice: `sync.Mutex`** (one lock; `Save` and `Get` both take it;
   `Save` does lookup → generate → insert in one critical section, as in
-  Part 1). I also built an `RWMutex` version (read lock for `Get` and for the
-  `Save` lookup fast path, write lock plus a second lookup before creating a
-  code) and benchmarked both on the same machine. It was correct (race tests
-  passed) but not faster for a realistic workload, so I reverted to `Mutex`.
-- **Measurements** (Intel i5-13450HX, 16 threads, Go 1.22, `-count=5`, median
-  ns/op, lower is better, identical benchmarks run against both versions).
-  Read-only and create paths:
-    | Benchmark                                                                    |    Threads |              Mutex |            RWMutex | Result                            |
-    | ---------------------------------------------------------------------------- | ---------: | -----------------: | -----------------: | --------------------------------- |
-    | `Get`                                                                        |          1 |               14.4 |               15.5 | ~equal                            |
-    | `Get`                                                                        |          4 |               30.9 |               48.2 | Mutex faster                      |
-    | `Get`                                                                        |         16 |               53.4 |               38.8 | RWMutex 27% faster                |
-    | `SaveExisting`                                                               |          4 |                109 |                 92 | RWMutex 15% faster                |
-    | `SaveExisting`                                                               |         16 |                165 |               84.5 | RWMutex 49% faster                |
-    | `SaveNew`                                                                    | 1 / 4 / 16 | 1954 / 1782 / 1811 | 2052 / 1870 / 1887 | equal (noise)                     |
-    | Mixed read/create workloads (`BenchmarkMixed`, one create per N operations): |
-    | Reads                                                                        |    Threads |              Mutex |            RWMutex | Result                            |
-    | ------:                                                                      |  --------: |            ------: |          --------: | --------                          |
-    | 90%                                                                          |          4 |                185 |                305 | Mutex faster (RW +65%)            |
-    | 90%                                                                          |         16 |                191 |                292 | Mutex faster (RW +53%)            |
-    | 99%                                                                          |          4 |               53.1 |               54.0 | tie                               |
-    | 99%                                                                          |         16 |               63.2 |               77.0 | Mutex faster (RW +22%)            |
-    | 99.9%                                                                        |          4 |               40.2 |               47.7 | Mutex faster (RW +19%)            |
-    | 99.9%                                                                        |         16 |               65.7 |               69.9 | Mutex faster (RW +6%, near noise) |
-    | Conclusion:                                                                  |
-    - `RWMutex` only wins when the workload is **100% reads** and many cores run
-      at once (`Get` and `SaveExisting` at 16 threads). As soon as even 1 in
-      1,000 operations is a create, the advantage disappears and `Mutex` is
-      equal or faster. A URL shortener always has some creates, so that
-      pure-read case does not describe a running service.
-    - A likely cause (not verified by profiling): a waiting writer makes new
-      readers park and wake, which costs more than a plain `Mutex` queue; and
-      `RWMutex.RLock` still updates a shared counter, so readers contend on a
-      cache line anyway.
-    - Caveat: `BenchmarkMixed` uses one shared atomic counter, which adds
-      contention to both versions, so absolute numbers are inflated. The
-      comparison between the two is still fair.
-    - All differences are at most ~100 ns, against a full redirect of 1,100+ ns
-      (see profile below), so end-to-end the choice is within a few percent.
-      With equal performance, the simpler lock wins.
-    - If the store ever became a measured bottleneck, the next steps would be
-      sharding the maps by code or an `atomic.Pointer` to an immutable map for
-      reads, not `RWMutex`.
+  Part 1). A `sync.RWMutex` variant, `MemoryRW`, is kept in the repo
+  (`internal/store/memory_rwmutex.go`) purely so the comparison below is
+  reproducible; it is covered by the same contract suite. `Memory` (Mutex) is
+  the store the server actually uses.
+- **Measurements.** Intel i5-13450HX (16 logical CPUs), `-count=6`,
+  `-benchtime=2s`, median ns/op, lower is better. Run the comparison with:
+
+    ```text
+    go test -run='^$' -bench=BenchmarkLockCompare -benchmem -count=6 -benchtime=2s ./internal/store/
+    ```
+
+    Read-only and create paths (`BenchmarkLockCompare{Get,SaveExisting,SaveNew}`):
+
+    | Benchmark      | Threads | Mutex | RWMutex | Result                          |
+    | -------------- | ------: | ----: | ------: | ------------------------------- |
+    | `Get`          |       1 |  58.6 |    63.7 | ~equal (Mutex slightly ahead)   |
+    | `Get`          |       4 | 100.0 |   156.7 | Mutex faster (~36%)             |
+    | `Get`          |      16 | 161.5 |   147.5 | RWMutex ~9% faster (near noise) |
+    | `SaveExisting` |      16 | 330.0 |   390.0 | ~equal, noisy (read fast path)  |
+    | `SaveNew`      |      16 | ~2900 |   ~2800 | equal (noise)                   |
+
+    Mixed read/create workloads (`BenchmarkLockCompareMixed`, one create per N ops),
+    16 threads, settled values:
+
+    | Reads | Mutex | RWMutex | Result                |
+    | ----: | ----: | ------: | --------------------- |
+    |   90% | 120.5 |    58.5 | RWMutex ~2× faster    |
+    |   99% |  74.5 |    59.5 | RWMutex ~1.25× faster |
+    | 99.9% |  70.3 |    59.5 | RWMutex ~1.2× faster  |
+
+    Notes: (read these before trusting any single cell):
+    - The whole series shows clear **thermal throttling**: absolute ns/op rise
+      through a run (e.g. `Get` Mutex-16 drifts 147 → 169 ns, `Get` Mutex-4
+      38 → 107 ns). Run one benchmark at a time and discard the first
+      `-count` to reduce this.
+    - **RWMutex needs a warm-up** in the mixed benchmark: its first iteration
+      is cold at ~210–256 ns and only then settles to ~57–60 ns, while Mutex
+      is stable from the start. That is why the same command produced _two
+      opposite_ mixed results: an earlier run had RWMutex at ~180 ns at 90%
+      reads, a later run had it at ~58 ns. The table uses the settled values.
+    - `SaveExisting` and `SaveNew` are within noise of each other in both
+      variants; `Normalize` (`url.Parse` + `String`) dominates and the lock
+      is not the cost there.
+
+    Conclusion: **the two locks are effectively a wash.** `RWMutex` wins pure
+    reads only at high thread counts (~9% at 16, within noise) and is _behind_ at
+    4 threads (~36%); it does not win the write paths. The mixed case flips with
+    warm-up — one run of the same benchmark had `RWMutex` ~2× ahead, another had
+    it behind — and the run-to-run spread (~58 vs ~180 ns at 90% reads) is larger
+    than the difference between the two locks. Across all cases, neither lock
+    wins reliably. `Mutex` is kept anyway, for reasons that do not depend on
+    winning the micro-benchmark:
+    1. **It does not matter end-to-end.** The store lookup is ~60–160 ns,
+       while a full redirect through Gin is ~8.6 µs and a create is ~17 µs
+       (see profile below); the lock is well under 1% of each request.
+       Even a 2× gain on the lookup is invisible at the HTTP layer.
+    2. **It is simpler and has one correct critical section.** `Save`
+       takes the lock once and does lookup → generate → insert atomically.
+       The RWMutex `Save` needs a read-lock probe, an unlock, then a write
+       lock and a _second_ lookup (double-checked locking), which is more
+       code and easier to get subtly wrong.
+    3. **The results are machine-sensitive.** The same
+       binary produced very different mixed numbers across runs. Choosing
+       the simpler lock avoids betting on a difference that does not
+       reproduce reliably.
+       If the store ever became a _measured_ bottleneck in production, the
+       honest next step is re-running this benchmark on the deployment's Go
+       version and hardware — and then sharding the maps by code or using an
+       `atomic.Pointer` to an immutable map, which beat both locks here.
+
 - **Where the time actually goes (profile of the redirect benchmark).** A
-  store `Get` is ~15–55 ns, while a full redirect through the handler is
-  ~1.1–1.4 µs/op with 22 allocs/op. In the CPU profile (taken with the RWMutex build, which
-  is the heavier lock), `store.(*Memory).Get` is 0.7% and `RWMutex.RLock` 1.3%,
-  so lookup plus lock is about 2%, while `runtime.mallocgc` is 42%.
-  `httptest.NewRequest` alone is 37%, which is benchmark harness overhead and
-  not server code; `handleRedirect` (including `http.Redirect`) is 24%.
-  About 18% is the Go runtime (`futex`, `procyield`, `lock2`): 16 goroutines
-  contending on the allocator and GC because each request allocates ~6 KB.
-  Lock choice therefore barely matters for end-to-end speed; allocation does.
+  store `Get` is ~150–165 ns, while a full redirect through the Gin handler is
+  ~8.6 µs/op with 30 allocs/op (numbers taken after the Gin refactor, which
+  added JSON/context handling on the redirect path — see README "Performance";
+  the lock comparison above was benchmarked separately against the store).
+  In the current CPU profile, `runtime.mallocgc` is ~24% cumulative,
+  `httptest.NewRequest` ~21%, `gin.(*Engine).ServeHTTP` ~21% and
+  `httpapi.(*server).handleRedirect` ~14%. The largest flat entries are all
+  runtime: `runtime.preemptM` (11.7%), `runtime.runqgrab` (10.3%) and
+  `runtime.semasleep` (9.4%) — goroutine preemption and parking under 16-way
+  concurrency. `store.(*Memory).Get` does not appear in the top nodes at all.
+  Lock choice therefore barely matters for end-to-end speed; request-path
+  allocation and runtime scheduling dominate.
   For `SaveExisting`, most of the time is in `Normalize` (`url.Parse` +
   `URL.String`), not in the lock. Possible future optimization (not done, not
   needed yet): skip re-parsing for inputs that are already canonical.
@@ -136,8 +159,7 @@ real store never produces.
 - **Eviction cap: none.** For a cache, evicting is harmless; for a URL
   shortener it is data loss: every place the short link was shared would start
   returning 404. Memory use grows ~0.5 KB per new link (upper bound, from
-  `B/op` of `BenchmarkSaveNew`), so ~1M links is roughly 0.5 GB. Bounding
-  memory is the job of the persistent store in Part 4, not of deleting links.
+  `B/op` of `BenchmarkMemorySaveNew`), so ~1M links is roughly 0.5 GB.
 
 ## Part 4
 
@@ -146,14 +168,14 @@ real store never produces.
   map or file cannot do once there is more than one server process. The
   in-memory `Memory` store stays as the default (`STORE=memory`, or no `STORE` at all), so
   `go run` works with nothing installed. `GormStore` implements the same
-  `httpapi.Store` interface (`Save`, `Get`); the handlers did not change.
+  `repository.Repository` interface (`Save`, `Get`); the handlers did not change.
   A compile-time assertion in `fake_test.go` guards that.
 - **Choosing the store and configuration.** `STORE=memory|postgres` (default
   `memory`) and `DATABASE_URL` are read from the environment, which can be
-  filled from a `.env` file in the working directory (see `.env.example`;
-  `.env` is git-ignored). Only `-addr` and `-base` are command-line flags, as
+  filled from a `.env` file in the working directory (see `.env.example`).
+  Only `-addr` and `-base` are command-line flags, as
   the spec requires. Go cannot read `.env` by itself, so `internal/envfile` is a
-  30-line standard-library loader instead of a third-party module (no new
+  standard-library loader instead of a third-party module (no new
   entry in Dependencies). Real environment variables win over the file; a
   missing file is fine. The DSN holds the password, so it is never logged or
   put in error messages (tests check both the loader errors and a failed
@@ -164,16 +186,19 @@ real store never produces.
   `AutoMigrate` and logs how many links already exist (`postgres store
 ready: N existing links`). Restart tests prove earlier links resolve.
 - **Schema and migrations.** One table, model `linkRow`:
-    | Column                                                                       | Type            | Constraint                               |
-    | ---------------------------------------------------------------------------- | --------------- | ---------------------------------------- |
-    | `code`                                                                       | `varchar(16)`   | PRIMARY KEY                              |
-    | `url`                                                                        | `varchar(2048)` | NOT NULL, UNIQUE index (`idx_links_url`) |
-    | `created_at`                                                                 | `timestamptz`   | NOT NULL                                 |
-    | Migration is GORM `AutoMigrate` at startup: creates the table and indexes if |
-    | missing and adds missing columns, never drops or renames. That is enough for |
-    | one table; with schema changes over time I would switch to versioned         |
-    | migration files. Known limit: several replicas starting at the very same     |
-    | moment on an empty database could race to create the table.                  |
+
+    | Column       | Type            | Constraint                               |
+    | ------------ | --------------- | ---------------------------------------- |
+    | `code`       | `varchar(16)`   | PRIMARY KEY                              |
+    | `url`        | `varchar(2048)` | NOT NULL, UNIQUE index (`idx_links_url`) |
+    | `created_at` | `timestamptz`   | NOT NULL                                 |
+
+Migration is GORM `AutoMigrate` at startup: creates the table and indexes if
+missing and adds missing columns, never drops or renames. That is enough for
+one table; with schema changes over time I would switch to versioned
+migration files. Known limit: several replicas starting at the very same
+moment on an empty database could race to create the table.
+
 - **URL length limit.** Normalized URLs longer than 2048 bytes are rejected as
   `ErrInvalidURL` (HTTP 400), in `Normalize`, for both stores. PostgreSQL
   cannot index values over ~2.7 KB, so without a limit a very long URL would
@@ -212,20 +237,38 @@ ready: N existing links`). Restart tests prove earlier links resolve.
   text is only logged (Part 2 mapping, unchanged). A test closes the database
   and checks exactly that.
 - **Test strategy.**
-    1. One shared contract suite (`runContract`) runs against `Memory`, against
-       GORM + SQLite (always), and against real PostgreSQL (when
-       `TEST_DATABASE_URL` is set). Passing the same suite shows the stores are
-       interchangeable.
-    2. SQLite (`gorm.io/driver/sqlite`, an allowed GORM SQL driver, test-only) is
-       used so the GORM code runs in `go test` without a database server, which
-       the grader's machine may not have. The tests use one connection
-       (`SetMaxOpenConns(1)`) to avoid "database is locked". The driver needs
-       cgo, which `go test -race` needs anyway. `github.com/glebarez/sqlite` is a
-       pure-Go drop-in (one import line) if cgo is ever unavailable.
-    3. Restart test: a new store instance on the same database file sees the
+    1. One shared contract suite (`runContract` in `contract_test.go`) takes a
+       `func(t *testing.T) repository.Repository` factory and runs the same
+       behavioural assertions against every implementation. `TestContractMemory`,
+       `TestContractGorm` (SQLite), and `TestContractPostgres` (real PostgreSQL,
+       skipped unless `TEST_DATABASE_URL` is set) all call it, proving the
+       stores are interchangeable. The local `linkStore` interface that
+       previously duplicated `repository.Repository` has been removed.
+    2. **Compile-time assertions** (`var _ repository.Repository = (*Memory)(nil)`
+       etc.) live in `contract_test.go` (close to the implementations) and
+       in `httpapi/fake_test.go` (close to the consumer). A missing or
+       wrong-signature method is a build failure, not a runtime panic.
+    3. SQLite (`gorm.io/driver/sqlite`, an allowed GORM SQL driver, test-only) is
+       used so the GORM code runs in `go test` without a database server. One
+       connection (`SetMaxOpenConns(1)`) avoids "database is locked". The driver
+       needs cgo, which `go test -race` needs anyway.
+    4. `openSQLite(tb testing.TB, path string)` accepts the `testing.TB`
+       interface so the same helper is used by both `*testing.T` tests
+       (`newTestGorm`) and `*testing.B` benchmarks (`newBenchGorm`) without
+       code duplication.
+    5. Restart test: a new store instance on the same database file sees the
        link, the same `created_at`, and the same code for a repeated save.
-    4. Collision, exhaustion and race-on-URL paths are tested with an injected
+    6. Collision, exhaustion and race-on-URL paths are tested with an injected
        code generator and by calling `tryInsert` twice for the same URL.
+    7. **GormStore benchmarks** (`BenchmarkGormGet`, `BenchmarkGormSaveExisting`,
+       `BenchmarkGormSaveNew` in `bench_test.go`) quantify the ORM + SQLite
+       overhead versus the in-memory store. They run single-goroutine
+       (`b.Loop()`) to avoid SQLite's serialised connection masking other costs.
+       Representative numbers on this machine (Go 1.25, `-count=3`, median):
+       `BenchmarkGormGet` ~194 µs vs `BenchmarkMemoryGet` ~161 ns — the ORM +
+       file I/O is ~1200× slower than the mutex-protected map, confirming that
+       the persistent store is suitable for durability, not for latency-critical
+       hot paths without a cache.
 - **Limitations (accepted).** `Store` methods take no `context.Context`, so a
   slow query is not cancelled when the HTTP client disconnects (the pool and
   server timeouts bound it). Pool limits are fixed (25 open, 5 idle, 30 min

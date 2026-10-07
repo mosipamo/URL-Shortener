@@ -54,8 +54,6 @@ func TestOpenStoreErrors(t *testing.T) {
 	}
 }
 
-// An unreachable database must fail fast, and the error must not leak the
-// password from the DSN.
 func TestOpenStorePostgresUnreachableDoesNotLeakPassword(t *testing.T) {
 	const dsn = "postgres://shortener:supersecret@127.0.0.1:1/shortener?sslmode=disable&connect_timeout=1"
 	_, _, err := openStore("postgres", dsn)

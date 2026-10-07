@@ -5,32 +5,20 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-}
-
-func (r *statusRecorder) WriteHeader(code int) {
-	r.status = code
-	r.ResponseWriter.WriteHeader(code)
-}
-
-func (r *statusRecorder) Unwrap() http.ResponseWriter {
-	return r.ResponseWriter
-}
-
-func Logging(l *log.Logger, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func Logger(l *log.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
 		start := time.Now()
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-
-		next.ServeHTTP(rec, r)
-
+		c.Next()
 		l.Printf("%d %-11s | %10s | %-4s %s",
-			rec.status, http.StatusText(rec.status),
+			c.Writer.Status(),
+			http.StatusText(c.Writer.Status()),
 			fmt.Sprint(time.Since(start).Round(time.Microsecond)),
-			r.Method, r.URL.Path)
-	})
+			c.Request.Method,
+			c.Request.URL.Path,
+		)
+	}
 }

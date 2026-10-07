@@ -10,3 +10,4 @@ store.go.RWMutex
 *.db
 *.sqlite
 .env
+*.exe

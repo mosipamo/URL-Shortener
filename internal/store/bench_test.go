@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func BenchmarkGet(b *testing.B) {
+func BenchmarkMemoryGet(b *testing.B) {
 	s := New()
 	code, _ := s.Save("https://example.com/x")
 	b.ReportAllocs()
@@ -20,7 +20,7 @@ func BenchmarkGet(b *testing.B) {
 	})
 }
 
-func BenchmarkSaveExisting(b *testing.B) {
+func BenchmarkMemorySaveExisting(b *testing.B) {
 	s := New()
 	if _, err := s.Save("https://example.com/x"); err != nil {
 		b.Fatal(err)
@@ -36,7 +36,7 @@ func BenchmarkSaveExisting(b *testing.B) {
 	})
 }
 
-func BenchmarkSaveNew(b *testing.B) {
+func BenchmarkMemorySaveNew(b *testing.B) {
 	s := New()
 	var n atomic.Uint64
 	b.ReportAllocs()
@@ -51,7 +51,7 @@ func BenchmarkSaveNew(b *testing.B) {
 	})
 }
 
-func BenchmarkMixed(b *testing.B) {
+func BenchmarkMemoryMixed(b *testing.B) {
 	for _, tc := range []struct {
 		name       string
 		writeEvery uint64
@@ -77,5 +77,44 @@ func BenchmarkMixed(b *testing.B) {
 				}
 			})
 		})
+	}
+}
+
+func BenchmarkGormGet(b *testing.B) {
+	s := newBenchGorm(b)
+	code, _ := s.Save("https://example.com/x")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := s.Get(code); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkGormSaveExisting(b *testing.B) {
+	s := newBenchGorm(b)
+	if _, err := s.Save("https://example.com/x"); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := s.Save("https://example.com/x"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkGormSaveNew(b *testing.B) {
+	s := newBenchGorm(b)
+	var n atomic.Uint64
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		u := "https://example.com/" + strconv.FormatUint(n.Add(1), 10)
+		if _, err := s.Save(u); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

@@ -8,17 +8,20 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/mosipamo/URL-Shortener/internal/model"
+	"github.com/mosipamo/URL-Shortener/internal/repository"
 )
 
-// linkStore is the behavior every store must have. The same contract runs
-// against Memory, SQLite-backed GORM, and (optionally) real PostgreSQL, which
-// proves the stores are interchangeable.
-type linkStore interface {
-	Save(longURL string) (string, error)
-	Get(code string) (Link, error)
-}
+var (
+	_ repository.Repository = (*Memory)(nil)
+	_ repository.Repository = (*MemoryRW)(nil)
+	_ repository.Repository = (*GormStore)(nil)
+)
 
-func runContract(t *testing.T, newStore func(t *testing.T) linkStore) {
+func runContract(t *testing.T, newStore func(t *testing.T) repository.Repository) {
+	t.Helper()
+
 	t.Run("save then get", func(t *testing.T) {
 		s := newStore(t)
 		code, err := s.Save("https://example.com/a")
@@ -43,7 +46,7 @@ func runContract(t *testing.T, newStore func(t *testing.T) linkStore) {
 	t.Run("same url same code", func(t *testing.T) {
 		s := newStore(t)
 		a, _ := s.Save("https://Example.com")
-		b, _ := s.Save("  https://example.com/ ") // equal after normalization
+		b, _ := s.Save("  https://example.com/ ")
 		if a == "" || a != b {
 			t.Fatalf("codes differ: %q vs %q", a, b)
 		}
@@ -61,21 +64,21 @@ func runContract(t *testing.T, newStore func(t *testing.T) linkStore) {
 		again, _ := s.Save("https://example.com/stable")
 		second, _ := s.Get(again)
 		if code != again || !first.CreatedAt.Equal(second.CreatedAt) {
-			t.Fatalf("repeat save changed the record: %v/%v vs %v/%v", code, first.CreatedAt, again, second.CreatedAt)
+			t.Fatalf("repeat save changed created_at: %v → %v", first.CreatedAt, second.CreatedAt)
 		}
 	})
 
 	t.Run("unknown code", func(t *testing.T) {
-		if _, err := newStore(t).Get("nope123"); !errors.Is(err, ErrNotFound) {
+		if _, err := newStore(t).Get("nope123"); !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("err = %v, want ErrNotFound", err)
 		}
 	})
 
 	t.Run("invalid urls", func(t *testing.T) {
 		s := newStore(t)
-		long := "https://example.com/" + strings.Repeat("a", MaxURLLength)
+		long := "https://example.com/" + strings.Repeat("a", model.MaxURLLength)
 		for _, in := range []string{"", "   ", "ftp://x.com", "example.com", "javascript:alert(1)", "https://", long} {
-			if _, err := s.Save(in); !errors.Is(err, ErrInvalidURL) {
+			if _, err := s.Save(in); !errors.Is(err, model.ErrInvalidURL) {
 				t.Errorf("Save(%.30q) err = %v, want ErrInvalidURL", in, err)
 			}
 		}
@@ -84,10 +87,10 @@ func runContract(t *testing.T, newStore func(t *testing.T) linkStore) {
 	t.Run("longest allowed url", func(t *testing.T) {
 		s := newStore(t)
 		prefix := "https://example.com/"
-		u := prefix + strings.Repeat("a", MaxURLLength-len(prefix))
+		u := prefix + strings.Repeat("a", model.MaxURLLength-len(prefix))
 		code, err := s.Save(u)
 		if err != nil {
-			t.Fatalf("a URL of exactly %d bytes must be accepted: %v", MaxURLLength, err)
+			t.Fatalf("URL of exactly %d bytes must be accepted: %v", model.MaxURLLength, err)
 		}
 		if l, err := s.Get(code); err != nil || l.URL != u {
 			t.Fatalf("round trip failed: %v", err)
@@ -99,7 +102,7 @@ func runContract(t *testing.T, newStore func(t *testing.T) linkStore) {
 		const n = 50
 		codes := make([]string, n)
 		var wg sync.WaitGroup
-		for i := 0; i < n; i++ {
+		for i := range n {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
@@ -123,7 +126,7 @@ func runContract(t *testing.T, newStore func(t *testing.T) linkStore) {
 		const n = 50
 		codes := make(chan string, n)
 		var wg sync.WaitGroup
-		for i := 0; i < n; i++ {
+		for i := range n {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
@@ -147,5 +150,11 @@ func runContract(t *testing.T, newStore func(t *testing.T) linkStore) {
 }
 
 func TestContractMemory(t *testing.T) {
-	runContract(t, func(t *testing.T) linkStore { return New() })
+	runContract(t, func(t *testing.T) repository.Repository { return New() })
+}
+
+func TestContractMemoryRW(t *testing.T) {
+	runContract(t, func(t *testing.T) repository.Repository {
+		return NewRW()
+	})
 }

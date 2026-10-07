@@ -1,22 +1,26 @@
 package httpapi
 
-import "github.com/mosipamo/URL-Shortener/internal/store"
+import (
+	"github.com/mosipamo/URL-Shortener/internal/model"
+	"github.com/mosipamo/URL-Shortener/internal/repository"
+	"github.com/mosipamo/URL-Shortener/internal/store"
+)
 
 type fakeStore struct {
 	saveFn func(string) (string, error)
-	getFn  func(string) (store.Link, error)
+	getFn  func(string) (model.Link, error)
 }
 
 func (f fakeStore) Save(u string) (string, error) {
 	return f.saveFn(u)
 }
 
-func (f fakeStore) Get(c string) (store.Link, error) {
+func (f fakeStore) Get(c string) (model.Link, error) {
 	return f.getFn(c)
 }
 
 var (
-	_ Store = fakeStore{}
-	_ Store = (*store.Memory)(nil)
-	_ Store = (*store.GormStore)(nil)
+	_ repository.Repository = fakeStore{}
+	_ repository.Repository = (*store.Memory)(nil)
+	_ repository.Repository = (*store.GormStore)(nil)
 )
