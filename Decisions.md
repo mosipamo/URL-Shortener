@@ -275,6 +275,57 @@ moment on an empty database could race to create the table.
 
 ## Part 5
 
+It would have been possible to implement a global cache (like the one I created) that works across the entire project, but I wasn't sure if it would fully meet your requirements, so I didn't proceed with that approach.
+
+This was an optional in-process read-through cache, mainly to reduce repeated lookups for hot codes while keeping the underlying store as the source of truth:
+
+```go
+// internal/store/cached.go
+
+type CachedStore struct {
+    inner repository.Repository
+    mu    sync.RWMutex
+    links map[string]model.Link
+}
+
+func NewCachedStore(inner repository.Repository) *CachedStore {
+    return &CachedStore{
+        inner: inner,
+        links: make(map[string]model.Link),
+    }
+}
+
+func (c *CachedStore) GetWithMeta(code string) (model.Link, bool, error) {
+    c.mu.RLock()
+    link, ok := c.links[code]
+    c.mu.RUnlock()
+    if ok {
+        return link, true, nil
+    }
+
+    link, err := c.inner.Get(code)
+    if err != nil {
+        return model.Link{}, false, err
+    }
+
+    c.mu.Lock()
+    c.links[code] = link
+    c.mu.Unlock()
+    return link, false, nil
+}
+```
+
+```go
+// cmd/server/main.go
+
+cache := flag.Bool("cache", defaultCacheType, "wrap the store in an in-memory read-through cache")
+
+if *cache {
+    repo = store.NewCachedStore(repo)
+    log.Printf("using in-memory read-through cache")
+}
+```
+
 - **Stateless app behind a load balancer.** The service is designed to be
   horizontal: one binary behind a load balancer, N identical replicas, each
   speaking the same `repository.Repository` contract. No replica keeps
