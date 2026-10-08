@@ -1,19 +1,26 @@
 # URL Shortener
 
 URL shortener in Go.
-(Currently: Parts 1–4.)
+(Parts 1–4 complete; Parts 5–6 covered via architecture docs, rate limiting, graceful shutdown, and domain policy.)
 
 ## Run
 
     go run ./cmd/server                                                          # in memory: data is lost on restart
     go run ./cmd/server -addr :9000 -base http://localhost:9000 -store postgres  # in PostgreSQL: links survive restarts
 
-| Flag     | Default                 | Meaning                          |
-| -------- | ----------------------- | -------------------------------- |
-| `-addr`  | `:8080`                 | listen address                   |
-| `-base`  | `http://localhost:8080` | prefix used to build `short_url` |
-| `-store` | `memory`                | store kind (memory or postgres)  |
+| Flag          | Default                 | Meaning                                        |
+| ------------- | ----------------------- | ---------------------------------------------- |
+| `-addr`       | `:8080`                 | listen address                                 |
+| `-base`       | `http://localhost:8080` | prefix used to build `short_url`               |
+| `-store`      | `memory`                | store kind (memory or postgres)                |
+| `-rate-limit` | `60`                    | maximum create requests per IP in a window     |
+| `-rate-window`| `1m0s`                  | window for the shorten rate limiter            |
 
+The shorten endpoint is rate-limited to 60 requests per minute per client IP by default, so a burst of repeated `POST /api/shorten` requests is rejected with `429 Too Many Requests`.
+
+**Graceful shutdown:** Ctrl+C (`SIGINT`) or `SIGTERM` stops accepting new connections, drains in-flight requests for up to 10 seconds, then closes the store and exits (`server stopped cleanly`).
+
+**Domain policy:** create rejects localhost, private/link-local/loopback IPs, and a small hostname denylist (HTTP 400). The server never fetches the long URL. Details in [DECISIONS.md](DECISIONS.md) Part 6.
 ## Run with PostgreSQL (links survive restarts)
 
 1. Create a database and a user in PostgreSQL (pgAdmin or `psql`), e.g. user
@@ -70,7 +77,7 @@ shorten. Covered by tests in `internal/store` and `internal/httpapi`.
 
     gofmt -l . && go vet ./... && go test -v -race ./...
     go test -v -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | tail -n1
-    # total: (statements) 85.2%
+    # total: (statements) 81.5%
 
 In Windows cmd there is no `tail`: run `go tool cover -func=coverage.out` and read the last line.
 
@@ -88,6 +95,7 @@ PostgreSQL (use a throwaway database; the test TRUNCATEs `links`):
 - Replace USER, PASSWORD, and DATABASE with your PostgreSQL test database credentials.
 - If the password contains special URL characters such as #, URL-encode them.
 - By running with your current database URL, your records in the table will be removed! You can test this with another test database url.
+- In windows, I needed to disable my security protection(antivirus) to execute `-race` in /cmd/server!!
 
 ## Performance
 

@@ -33,3 +33,17 @@
 - [x] 4 Restart test (temp SQLite file; optional real PostgreSQL)
 - [x] 3 `-store` flag selects memory or persistent store
 - [x] 2 `-race` clean with the persistent store
+
+## Part 5 — Millions of requests (+10 max)
+- [x] 4 `DECISIONS.md`: LB → N apps → shared store
+- [x] 3 CDN / edge caching for redirects
+- [x] 3 Write-path scaling (rate limit, queue, or code pool)
+- [x] 3 Sharding / partitioning strategy
+- [ ] 4 Bonus code: cache layer, load-test script + README numbers
+
+## Part 6 — Production habits (+10 max)
+- [x] 3 Graceful shutdown working + documented
+- [x] 3 Rate limit on create
+- [x] 2 Domain policy in `DECISIONS.md`
+- [x] 2 What you log vs never log
+- [ ] 4 Bonus: pprof/metrics behind flag, or structured logging

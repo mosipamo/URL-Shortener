@@ -79,6 +79,9 @@ func TestShortenBadRequests(t *testing.T) {
 		{"not json", `not json`},
 		{"empty body", ``},
 		{"wrong type", `{"url":123}`},
+		{"localhost", `{"url":"http://localhost/secret"}`},
+		{"private ip", `{"url":"http://192.168.0.1/"}`},
+		{"blocked host", `{"url":"https://malware.example/"}`},
 	}
 	h := newHandler()
 	for _, tc := range tests {

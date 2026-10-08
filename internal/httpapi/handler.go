@@ -19,9 +19,14 @@ type server struct {
 }
 
 func New(repo repository.Repository, baseURL string, l *log.Logger) *gin.Engine {
+	return NewWithRateLimit(repo, baseURL, l, 60, time.Minute)
+}
+
+func NewWithRateLimit(repo repository.Repository, baseURL string, l *log.Logger, maxRequests int, window time.Duration) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(Logger(l))
+	router.Use(RateLimit(maxRequests, window))
 
 	s := &server{repo: repo, baseURL: strings.TrimRight(baseURL, "/")}
 	router.POST("/api/shorten", s.handleShorten)

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/mosipamo/URL-Shortener/internal/envfile"
@@ -18,6 +21,9 @@ import (
 const (
 	defaultAddr       = ":8080"
 	defaultBase       = "http://localhost:8080"
+	defaultRateLimit  = 60
+	defaultRateWindow = time.Minute
+	shutdownTimeout   = 10 * time.Second
 	readHeaderTimeout = 5 * time.Second
 	readTimeout       = 10 * time.Second
 	writeTimeout      = 10 * time.Second
@@ -71,18 +77,39 @@ func main() {
 	addr := flag.String("addr", defaultAddr, "listen address")
 	base := flag.String("base", defaultBase, "base URL used in short_url")
 	store := flag.String("store", "memory", "store kind (memory or postgres)")
+	rateLimit := flag.Int("rate-limit", defaultRateLimit, "max shorten requests per client per rate-window")
+	rateWindow := flag.Duration("rate-window", defaultRateWindow, "window for the shorten rate limiter")
 	flag.Parse()
 
 	repo, closeStore, err := openStore(*store, os.Getenv("DATABASE_URL"))
 	if err != nil {
 		log.Fatalf("store: %v", err)
 	}
+	defer func() {
+		if cerr := closeStore(); cerr != nil {
+			log.Printf("closing store: %v", cerr)
+		}
+	}()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	srv := newServer(*addr, *base, repo)
-	log.Printf("listening on %s (base %s, store %s)", *addr, *base, *store)
-	err = srv.ListenAndServe()
-	if cerr := closeStore(); cerr != nil {
-		log.Printf("closing store: %v", cerr)
+	httpapiHandler := httpapi.NewWithRateLimit(repo, *base, log.Default(), *rateLimit, *rateWindow)
+	srv.Handler = httpapiHandler
+	log.Printf("listening on %s (base %s, store %s, rate-limit %d/%s)", *addr, *base, *store, *rateLimit, *rateWindow)
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
+	}()
+
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
 	}
-	log.Fatal(err)
+	log.Println("server stopped cleanly")
 }

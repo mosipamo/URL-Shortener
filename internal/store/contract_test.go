@@ -77,7 +77,7 @@ func runContract(t *testing.T, newStore func(t *testing.T) repository.Repository
 	t.Run("invalid urls", func(t *testing.T) {
 		s := newStore(t)
 		long := "https://example.com/" + strings.Repeat("a", model.MaxURLLength)
-		for _, in := range []string{"", "   ", "ftp://x.com", "example.com", "javascript:alert(1)", "https://", long} {
+		for _, in := range []string{"", "   ", "ftp://x.com", "example.com", "javascript:alert(1)", "https://", "http://127.0.0.1/", "https://malware.example/", long} {
 			if _, err := s.Save(in); !errors.Is(err, model.ErrInvalidURL) {
 				t.Errorf("Save(%.30q) err = %v, want ErrInvalidURL", in, err)
 			}

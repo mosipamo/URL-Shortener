@@ -22,7 +22,7 @@ There are **no** modules that require an entry here. Every module in `go.mod` is
 
 - **Mutex type and locking strategy:** A single `sync.Mutex` is used. Both `Save` and `Get` acquire the lock. `Save` performs the lookup, code generation, and insertion within the same critical section, ensuring that concurrent requests for the same URL receive the same code. The use of `RWMutex` is deferred to Part 3, where it will be evaluated using benchmarks.
 
-- **Validation / SSRF:** A URL must be non-empty and parseable, use either the `http` or `https` scheme, and contain a host. The server never fetches the long URL; it only stores it and redirects clients to it.
+- **Validation / SSRF:** A URL must be non-empty and parseable, use either the `http` or `https` scheme, and contain a host. The server never fetches the long URL; it only stores it and redirects clients to it. Part 6 adds a host policy (no localhost / private IPs / denylist) on top of this.
 
 - **Package layout:** `cmd/server` contains flags and application wiring. `internal/model` holds the domain types (`Link`, sentinel errors, `MaxURLLength`) shared across all layers. `internal/repository` declares the `Repository` interface consumed by the HTTP handlers. `internal/store` holds the `Memory` and `GormStore` implementations plus the `Normalize` utility. `internal/httpapi` wires Gin routes and handlers.
 
@@ -272,3 +272,85 @@ moment on an empty database could race to create the table.
   slow query is not cancelled when the HTTP client disconnects (the pool and
   server timeouts bound it). Pool limits are fixed (25 open, 5 idle, 30 min
   lifetime).
+
+## Part 5
+
+- **Stateless app behind a load balancer.** The service is designed to be
+  horizontal: one binary behind a load balancer, N identical replicas, each
+  speaking the same `repository.Repository` contract. No replica keeps
+  node-local truth beyond the store, so adding capacity does not reshuffle
+  existing short links.
+- **Shared store.** Production uses PostgreSQL (`-store postgres`). A
+  per-pod in-memory map would split-brain redirects across replicas; the
+  shared database is the source of truth for every create and lookup.
+- **CDN / edge caching for redirects (read path).** Hot `GET /{code}`
+  responses are cacheable at the edge as **302** with a short TTL
+  (suggested **60–300 s**) and **stale-while-revalidate**. Tradeoffs:
+  - **Cost / load:** most redirect traffic never hits the origin.
+  - **Consistency:** if a link were ever deleted or retargeted, clients
+    can see a **stale Location** until the TTL expires. Acceptable for a
+    shortener where codes are immutable after create (this project never
+    updates a stored URL). If deletion were added later, the CDN would
+    need purge-by-key or a very short TTL.
+  - **Origin headers:** a production edge config would set
+    `Cache-Control: public, max-age=60, stale-while-revalidate=30` on
+    successful redirects and `Cache-Control: no-store` on 404s so unknown
+    codes are not cached as empty.
+- **Write-path scaling.** Create traffic is guarded by the in-process rate
+  limiter on `POST /api/shorten` (see Part 6). If creates became the
+  bottleneck, the next steps would be an async queue (accept → enqueue →
+  worker persists) or a pre-generated code pool; neither is needed yet
+  because redirect volume dominates and the DB already serializes
+  idempotent inserts.
+- **Sharding / partitioning strategy.** Not implemented: a single Postgres
+  instance is enough for the current code space (`62^7`) and expected load.
+  When one database or table becomes the throughput bottleneck, partition
+  by **hash of the short code** (e.g. first character or
+  `crc32(code) % N`) into N shards, each a separate Postgres (or schema).
+  Routing: the redirect path hashes the code and talks to one shard; the
+  create path picks a shard the same way after generating the code (or
+  generates until the code lands on a preferred shard). Tradeoffs:
+  - **Pros:** linear write/read capacity; hot codes stay on one shard so
+    per-shard caches stay effective.
+  - **Cons:** cross-shard idempotency (same long URL on two shards) needs
+    either a global URL index or accepting rare duplicate codes for one
+    URL; rebalancing shards later is operationally expensive. Until that
+    pain appears, vertical scale + read replicas / CDN is cheaper.
+
+## Part 6
+
+- **Graceful shutdown.** `cmd/server/main.go` uses
+  `signal.NotifyContext` for `SIGINT` / `SIGTERM`, then
+  `Server.Shutdown` with a **10 s** drain timeout. The listener stops
+  accepting new connections; in-flight requests finish (or are cut when
+  the timeout fires). After `ListenAndServe` returns, `defer` closes the
+  store. Manual check: start the server, `curl` a slow client or a normal
+  request, send Ctrl+C — logs show `server stopped cleanly`.
+- **Rate limit parameters.** `POST /api/shorten` only: default
+  **60 requests per client IP per 1 minute** (`-rate-limit`,
+  `-rate-window`). Excess returns **429** with
+  `{"error":"too many requests"}`. Redirects and metadata are not limited.
+  Implementation is an in-process sliding window (no extra dependency);
+  behind a load balancer each replica counts separately unless a shared
+  store (Redis) is added later.
+- **Domain policy (blocklist).** Enforced in `store.Normalize` /
+  `checkHostPolicy` before any insert (HTTP **400**, `ErrInvalidURL`):
+  - **Allow:** `http` / `https` only, non-empty host, length ≤ 2048,
+    public hosts (no DNS lookup of the target — the server never fetches
+    the long URL).
+  - **Block:** `localhost` and `*.localhost`; loopback, private
+    (RFC 1918 / ULA), link-local, and unspecified IPs (covers cloud
+    metadata `169.254.169.254`); plus a small hostname denylist
+    (`malware.example`, `phishing.example`) extensible in
+    `blockedHosts`.
+  - **Not covered:** a public hostname that later resolves to a private
+    IP (DNS rebinding). Mitigating that would need resolve-at-create or
+    egress controls, which is out of scope here.
+- **What is logged and never logged.** Logger records status, method,
+  latency, and **path only**. Query strings are omitted; the long target
+  URL is never logged on the request line, so tokens in query params do
+  not enter logs. Database passwords from `DATABASE_URL` are never logged.
+- **Observability.** Request logs and clean shutdown are in place.
+  Adding `pprof`/metrics behind a flag or structured (`slog`) logging is
+  left as an optional bonus; the handler/middleware shape already allows
+  it without changing the store contract.

@@ -6,8 +6,10 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mosipamo/URL-Shortener/internal/store"
@@ -65,5 +67,20 @@ func TestLoggingDiscard(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/unknown", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestRateLimitShorten(t *testing.T) {
+	h := NewWithRateLimit(store.New(), base, log.New(io.Discard, "", 0), 1, time.Minute)
+	for i := 0; i < 2; i++ {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/shorten",
+			strings.NewReader(`{"url":"https://example.com/`+strconv.Itoa(i)+`"}`)))
+		if i == 0 && rec.Code != http.StatusCreated {
+			t.Fatalf("first request status = %d, want 201", rec.Code)
+		}
+		if i == 1 && rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("second request status = %d, want 429", rec.Code)
+		}
 	}
 }

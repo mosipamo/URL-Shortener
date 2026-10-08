@@ -3,6 +3,7 @@ package store
 import (
 	"crypto/rand"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 	"sync"
@@ -10,6 +11,11 @@ import (
 
 	"github.com/mosipamo/URL-Shortener/internal/model"
 )
+
+var blockedHosts = map[string]struct{}{
+	"malware.example":  {},
+	"phishing.example": {},
+}
 
 const (
 	alphabet   = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -82,8 +88,12 @@ func Normalize(raw string) (string, error) {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return "", fmt.Errorf("%w: scheme must be http or https", model.ErrInvalidURL)
 	}
-	if u.Hostname() == "" {
+	host := u.Hostname()
+	if host == "" {
 		return "", fmt.Errorf("%w: missing host", model.ErrInvalidURL)
+	}
+	if err := checkHostPolicy(host); err != nil {
+		return "", err
 	}
 	u.Host = strings.ToLower(u.Host)
 	if u.Path == "" {
@@ -94,6 +104,23 @@ func Normalize(raw string) (string, error) {
 		return "", fmt.Errorf("%w: longer than %d bytes", model.ErrInvalidURL, model.MaxURLLength)
 	}
 	return out, nil
+}
+
+func checkHostPolicy(host string) error {
+	host = strings.ToLower(host)
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return fmt.Errorf("%w: host not allowed", model.ErrInvalidURL)
+	}
+	if _, blocked := blockedHosts[host]; blocked {
+		return fmt.Errorf("%w: host not allowed", model.ErrInvalidURL)
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+			ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("%w: host not allowed", model.ErrInvalidURL)
+		}
+	}
+	return nil
 }
 
 func randomCode() string {

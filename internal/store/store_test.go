@@ -38,6 +38,17 @@ func TestSaveInvalid(t *testing.T) {
 		{"port only", "http://:80"},
 		{"unparseable", "http://[::1"},
 		{"too long", "https://example.com/" + strings.Repeat("a", model.MaxURLLength)},
+		{"localhost", "http://localhost/admin"},
+		{"localhost subdomain", "https://app.localhost/"},
+		{"loopback v4", "http://127.0.0.1/"},
+		{"loopback v6", "http://[::1]/"},
+		{"private 10", "https://10.0.0.5/x"},
+		{"private 192", "http://192.168.1.1/"},
+		{"private 172", "http://172.16.0.1/"},
+		{"link-local metadata", "http://169.254.169.254/latest"},
+		{"unspecified", "http://0.0.0.0/"},
+		{"blocked malware host", "https://malware.example/pay"},
+		{"blocked phishing host", "https://phishing.example/"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -45,6 +56,18 @@ func TestSaveInvalid(t *testing.T) {
 				t.Fatalf("err = %v, want ErrInvalidURL", err)
 			}
 		})
+	}
+}
+
+func TestHostPolicyAllowsPublic(t *testing.T) {
+	for _, in := range []string{
+		"https://example.com/",
+		"https://go.dev/doc/",
+		"http://8.8.8.8/",
+	} {
+		if _, err := Normalize(in); err != nil {
+			t.Errorf("Normalize(%q) = %v, want nil", in, err)
+		}
 	}
 }
 
