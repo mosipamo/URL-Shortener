@@ -94,7 +94,7 @@ PostgreSQL (use a throwaway database; the test TRUNCATEs `links`):
 
 - Replace USER, PASSWORD, and DATABASE with your PostgreSQL test database credentials.
 - If the password contains special URL characters such as #, URL-encode them.
-- By running with your current database URL, your records in the table will be removed! You can test this with another test database url.
+- By running with your current database URL, your records in the table will be removed!(TestContractPostgres will truncate links table!!) You can test this with another test database url.
 - In windows, I needed to disable my security protection(antivirus) to execute `-race` in /cmd/server!!
 
 ## Performance
