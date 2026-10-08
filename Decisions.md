@@ -397,11 +397,15 @@ if *cache {
   - **Not covered:** a public hostname that later resolves to a private
     IP (DNS rebinding). Mitigating that would need resolve-at-create or
     egress controls, which is out of scope here.
-- **What is logged and never logged.** Logger records status, method,
-  latency, and **path only**. Query strings are omitted; the long target
-  URL is never logged on the request line, so tokens in query params do
-  not enter logs. Database passwords from `DATABASE_URL` are never logged.
-- **Observability.** Request logs and clean shutdown are in place.
-  Adding `pprof`/metrics behind a flag or structured (`slog`) logging is
-  left as an optional bonus; the handler/middleware shape already allows
-  it without changing the store contract.
+- **What is logged and never logged.** Each HTTP request produces one JSON
+  `slog` record with method, Gin route template, status code/text, and
+  fractional duration in milliseconds. Statuses 4xx are `WARN`; 5xx are
+  `ERROR`.
+  The raw URL, query string, request body, redirect target, and database
+  password are never logged. Using the route template also avoids logging
+  user-provided path values; unmatched routes are recorded as `unmatched`.
+- **Observability.** Structured request events go to the configured logger
+  output (stderr in the server). Their timestamps support deriving RPS by
+  counting requests over time windows, while status fields support error
+  counts and rates in a log aggregator. No metrics or pprof endpoint is
+  exposed, so there is no diagnostic endpoint to secure.

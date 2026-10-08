@@ -20,18 +20,20 @@ func TestLogging(t *testing.T) {
 	h := New(store.New(), base, log.New(&buf, "", 0))
 
 	h.ServeHTTP(httptest.NewRecorder(),
-		httptest.NewRequest(http.MethodPost, "/api/shorten", strings.NewReader(`{"url":"https://example.com"}`)))
+		httptest.NewRequest(http.MethodPost, "/api/shorten", strings.NewReader(`{"url":"https://example.com/path?token=body-secret"}`)))
 	h.ServeHTTP(httptest.NewRecorder(),
 		httptest.NewRequest(http.MethodGet, "/nope?token=secret", nil))
 
 	out := buf.String()
-	for _, want := range []string{"201 Created", "POST /api/shorten", "404 Not Found", "GET  /nope"} {
+	for _, want := range []string{`"msg":"http request"`, `"method":"POST"`, `"route":"/api/shorten"`, `"status":201`, `"status_text":"Created"`, `"method":"GET"`, `"route":"/:code"`, `"status":404`, `"status_text":"Not Found"`, `"duration_ms":`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("log missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "secret") {
-		t.Errorf("query string leaked into log:\n%s", out)
+	for _, sensitive := range []string{"secret", "https://example.com/path"} {
+		if strings.Contains(out, sensitive) {
+			t.Errorf("sensitive URL data %q leaked into log:\n%s", sensitive, out)
+		}
 	}
 }
 
@@ -43,8 +45,8 @@ func TestLoggingDefaultStatus200(t *testing.T) {
 		_, _ = c.Writer.Write([]byte("hi"))
 	})
 	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
-	if !strings.Contains(buf.String(), "200 OK") {
-		t.Errorf("want 200 OK in log, got %q", buf.String())
+	if !strings.Contains(buf.String(), `"status":200`) || !strings.Contains(buf.String(), `"status_text":"OK"`) {
+		t.Errorf("want structured 200 status in log, got %q", buf.String())
 	}
 }
 
@@ -56,8 +58,8 @@ func TestLoggingCapturesErrorStatus(t *testing.T) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "boom"})
 	})
 	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/boom", nil))
-	if !strings.Contains(buf.String(), "500 Internal Server Error") {
-		t.Errorf("want 500 in log, got %q", buf.String())
+	if !strings.Contains(buf.String(), `"level":"ERROR"`) || !strings.Contains(buf.String(), `"status":500`) {
+		t.Errorf("want structured 500 error in log, got %q", buf.String())
 	}
 }
 

@@ -46,4 +46,4 @@
 - [x] 3 Rate limit on create
 - [x] 2 Domain policy in `DECISIONS.md`
 - [x] 2 What you log vs never log
-- [ ] 4 Bonus: pprof/metrics behind flag, or structured logging
+- [x] 4 Bonus: structured request logging with Go `slog`

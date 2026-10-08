@@ -1,8 +1,8 @@
 package httpapi
 
 import (
-	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -13,15 +13,34 @@ import (
 )
 
 func Logger(l *log.Logger) gin.HandlerFunc {
+	if l == nil {
+		l = log.Default()
+	}
+	logger := slog.New(slog.NewJSONHandler(l.Writer(), nil))
+
 	return func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
-		l.Printf("%d %-11s | %10s | %-4s %s",
-			c.Writer.Status(),
-			http.StatusText(c.Writer.Status()),
-			fmt.Sprint(time.Since(start).Round(time.Microsecond)),
-			c.Request.Method,
-			c.Request.URL.Path,
+
+		status := c.Writer.Status()
+		level := slog.LevelInfo
+		if status >= http.StatusInternalServerError {
+			level = slog.LevelError
+		} else if status >= http.StatusBadRequest {
+			level = slog.LevelWarn
+		}
+
+		route := c.FullPath()
+		if route == "" {
+			route = "unmatched"
+		}
+		duration := float64(time.Since(start)) / float64(time.Millisecond)
+		logger.LogAttrs(c.Request.Context(), level, "http request",
+			slog.String("method", c.Request.Method),
+			slog.String("route", route),
+			slog.Int("status", status),
+			slog.String("status_text", http.StatusText(status)),
+			slog.Float64("duration_ms", duration),
 		)
 	}
 }

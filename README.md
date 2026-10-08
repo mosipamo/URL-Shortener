@@ -1,7 +1,7 @@
 # URL Shortener
 
 URL shortener in Go.
-(Parts 1–4 complete; Parts 5–6 covered via architecture docs, rate limiting, graceful shutdown, and domain policy.)
+(Parts 1–4 complete; Parts 5–6 covered via architecture docs, rate limiting, graceful shutdown, domain policy, and structured request logs.)
 
 ## Run
 
@@ -19,6 +19,8 @@ URL shortener in Go.
 The shorten endpoint is rate-limited to 60 requests per minute per client IP by default, so a burst of repeated `POST /api/shorten` requests is rejected with `429 Too Many Requests`.
 
 **Graceful shutdown:** Ctrl+C (`SIGINT`) or `SIGTERM` stops accepting new connections, drains in-flight requests for up to 10 seconds, then closes the store and exits (`server stopped cleanly`).
+
+**Request logs:** each request emits a structured JSON record with method, route template, status, and fractional duration in milliseconds. 4xx and 5xx responses are marked as warnings and errors. The raw URL, query string, request body, and redirect target are omitted; request timestamps and statuses can be aggregated to calculate RPS and error rates.
 
 **Domain policy:** create rejects localhost, private/link-local/loopback IPs, and a small hostname denylist (HTTP 400). The server never fetches the long URL. Details in [DECISIONS.md](DECISIONS.md) Part 6.
 ## Run with PostgreSQL (links survive restarts)
