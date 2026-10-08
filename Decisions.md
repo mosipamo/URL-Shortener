@@ -4,8 +4,8 @@
 
 There are **no** modules that require an entry here. Every module in `go.mod` is part of an explicitly allowed category:
 
-- `github.com/gin-gonic/gin` — the HTTP router and context framework used by `internal/httpapi` (refactor branch, replacing `net/http`'s `ServeMux`). The spec allows any web router/framework and says **not** to list it here.
-- `gorm.io/gorm` plus the SQL drivers `gorm.io/driver/postgres` and `gorm.io/driver/sqlite` — GORM and its SQL driver(s) for Part 4 persistence; the spec allows them and says **not** to list them here. SQLite is used only in tests.
+- `github.com/gin-gonic/gin` — the HTTP router and context framework used by `internal/httpapi` (replacing the standard library `net/http` `ServeMux` that Parts 1–4 started with). 
+- `gorm.io/gorm` plus the SQL drivers `gorm.io/driver/postgres` and `gorm.io/driver/sqlite` — GORM and its SQL driver(s) for Part 4 persistence. SQLite is used only in tests.
 - All remaining entries are indirect (`// indirect`) or Gin's own transitive dependencies.
 
 `.env` loading is done by `internal/envfile`, a standard-library-only parser, so no third-party env library (e.g. `godotenv`) is used.
@@ -47,9 +47,10 @@ type Repository interface {
     | `ErrInvalidURL`                                                                                                                                           | 400    | `{"error":"<store message>"}` (safe, tells the client what is wrong)                   |
     | `ErrNotFound`                                                                                                                                             | 404    | `{"error":"not found"}` (fixed text, so internal wrapping and the code are not echoed) |
     | anything else                                                                                                                                             | 500    | `{"error":"internal error"}`; the real error is only logged                            |
-    | Malformed JSON is a handler-level 400 (`invalid JSON body`) because it never reaches the repository. All error bodies share the `{"error": "..."}` shape. |
 
-- **HTTP framework.** Gin (`github.com/gin-gonic/gin`) replaces the stdlib mux. Handlers receive a `*gin.Context` instead of `(http.ResponseWriter, *http.Request)` (I used stdlib mux in parts 1 to 4 and then I refactored it). `c.ShouldBindJSON` decodes the request body; `c.JSON` / `c.Redirect` write responses. Gin's radix-tree router resolves `GET /:code` vs `GET /api/v1/links/:code` without conflict because static path prefixes take priority over parameter wildcards.
+Malformed JSON is a handler-level 400 (`invalid JSON body`) because it never reaches the store. All error bodies share the `{"error": "..."}` shape.
+
+- **HTTP framework.** Gin (`github.com/gin-gonic/gin`) replaces the stdlib mux. Handlers receive a `*gin.Context` instead of `(http.ResponseWriter, *http.Request)` (I used stdlib mux in parts 1 to 4 and then refactored afterwards). `c.ShouldBindJSON` decodes the request body; `c.JSON` / `c.Redirect` write responses. Gin's radix-tree router resolves `GET /:code` vs `GET /api/v1/links/:code` without conflict because static path prefixes take priority over parameter wildcards. Gin does not derive `HEAD` from `GET`, so `HEAD /:code` is registered explicitly (`curl -I` works).
 - **Logger middleware.** `httpapi.Logger(*log.Logger) gin.HandlerFunc` is a Gin middleware factory. It is injected into `New(repo, base, logger)` so tests can capture log output with `log.New(&buf, "", 0)` and production code passes `log.Default()`. The query string is omitted from log lines to prevent token/secret leakage.
 - **`created_at`.** Set once, when the code is first created, in UTC from an injectable clock (`Memory.now`) so tests are deterministic. Returned as RFC3339 (`2026-01-15T12:00:00Z`), formatted explicitly because Go's default `time.Time` JSON adds fractional seconds.
 - **Idempotency after the refactor.** `byURL` is unchanged and a repeated `Save` returns the existing code without touching the stored `Link`, so `created_at` stays the original. Tested in the store (advancing clock) and over HTTP (`TestLinkInfoViaRealStoreAndIdempotency`).
@@ -59,7 +60,7 @@ type Repository interface {
 - **Locking choice: `sync.Mutex`** (one lock; `Save` and `Get` both take it;
   `Save` does lookup → generate → insert in one critical section, as in
   Part 1). A `sync.RWMutex` variant, `MemoryRW`, is kept in the repo
-  (`internal/store/memory_rwmutex.go`) purely so the comparison below is
+  (`internal/store/memory_rwmutex_test.go`, compiled only into tests, not into the server binary) purely so the comparison below is
   reproducible; it is covered by the same contract suite. `Memory` (Mutex) is
   the store the server actually uses.
 - **Measurements.** Intel i5-13450HX (16 logical CPUs), `-count=6`,
@@ -154,8 +155,9 @@ type Repository interface {
     | `ReadTimeout`                                                               | 10 s  | Whole request including body. Bodies are tiny JSON (also capped at 1 MiB), so 10 s is generous.                                                                                                                      |
     | `WriteTimeout`                                                              | 10 s  | Responses are small; a client that stops reading is dropped.                                                                                                                                                         |
     | `IdleTimeout`                                                               | 60 s  | Keep-alive connections waiting for another request are closed after a minute, freeing file descriptors.                                                                                                              |
-    | `newServer` builds the server so a test can assert the timeouts are set and |
-    | ordered sensibly.                                                           |
+    
+    `newServer` builds the server so a test can assert the timeouts are set and ordered sensibly.
+
 - **Eviction cap: none.** For a cache, evicting is harmless; for a URL
   shortener it is data loss: every place the short link was shared would start
   returning 404. Memory use grows ~0.5 KB per new link (upper bound, from
@@ -163,18 +165,15 @@ type Repository interface {
 
 ## Part 4
 
-- **Storage choice: GORM + PostgreSQL 16.** Links must survive restarts and
-  the database enforces the uniqueness rules, which a single mutex-protected
-  map or file cannot do once there is more than one server process. The
-  in-memory `Memory` store stays as the default (`STORE=memory`, or no `STORE` at all), so
-  `go run` works with nothing installed. `GormStore` implements the same
+- **Storage choice: GORM + PostgreSQL 16.** Links must survive restarts and the database enforces the 
+  uniqueness rules, which a single mutex-protected map or file cannot do once there is more than one 
+  server process. The in-memory `Memory` store stays the default (`-store memory`), so `go run ./cmd/server` 
+  works with nothing installed. `GormStore` implements the same
   `repository.Repository` interface (`Save`, `Get`); the handlers did not change.
   A compile-time assertion in `fake_test.go` guards that.
-- **Choosing the store and configuration.** `STORE=memory|postgres` (default
-  `memory`) and `DATABASE_URL` are read from the environment, which can be
+- **Choosing the store and configuration.** `DATABASE_URL` is read from the environment, which can be
   filled from a `.env` file in the working directory (see `.env.example`).
-  Only `-addr` and `-base` are command-line flags, as
-  the spec requires. Go cannot read `.env` by itself, so `internal/envfile` is a
+  Only `-addr` and `-base` are command-line flags. Go cannot read `.env` by itself, so `internal/envfile` is a
   standard-library loader instead of a third-party module (no new
   entry in Dependencies). Real environment variables win over the file; a
   missing file is fine. The DSN holds the password, so it is never logged or
@@ -272,4 +271,4 @@ moment on an empty database could race to create the table.
 - **Limitations (accepted).** `Store` methods take no `context.Context`, so a
   slow query is not cancelled when the HTTP client disconnects (the pool and
   server timeouts bound it). Pool limits are fixed (25 open, 5 idle, 30 min
-  lifetime). There is no read cache; adding one is a Part 5 topic.
+  lifetime).

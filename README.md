@@ -22,9 +22,9 @@ URL shortener in Go.
 
         cp .env.example .env        # then edit DATABASE_URL
 
-    `.env` holds the a single setting that may contain secrets:
+    `.env` holds the one setting that contains a secret:
 
-        DATABASE_URL=postgres://shortener:secret@localhost:5432/shortener
+        DATABASE_URL=postgres://shortener:secret@localhost:5432/shortener?sslmode=disable
 
 3. Run from the project root (the server looks for `.env` in the current directory):
 
@@ -62,7 +62,7 @@ needs `go mod download` or just `go run ./cmd/server`
 
 Errors are always JSON: `{"error":"..."}` with 400 (bad input), 404 (unknown code) or 500.
 
-**Idempotency policy:** the same URL (after normalization, see Decisions.md)
+**Idempotency policy:** the same URL (after normalization, see DECISIONS.md)
 always returns the same code, and `created_at` keeps the time of the first
 shorten. Covered by tests in `internal/store` and `internal/httpapi`.
 
@@ -70,7 +70,7 @@ shorten. Covered by tests in `internal/store` and `internal/httpapi`.
 
     gofmt -l . && go vet ./... && go test -v -race ./...
     go test -v -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | tail -n1
-    # total: (statements) 82.0%
+    # total: (statements) 85.2%
 
 In Windows cmd there is no `tail`: run `go tool cover -func=coverage.out` and read the last line.
 
@@ -170,6 +170,6 @@ the difference between the two locks. Across all cases, neither lock wins
 reliably. Since the whole lookup is ~60–160 ns against a ~8.6 µs redirect and
 ~17 µs create, the lock is well under 1% of a request, so the simpler `Mutex`
 (one atomic critical section, no double-checked locking) is kept. The full
-analysis is in `Decisions.md`, Part 3.
+analysis is in `DECISIONS.md`, Part 3.
 
-Design choices are in [Decisions.md](Decisions.md).
+Design choices are in [DECISIONS.md](DECISIONS.md).
