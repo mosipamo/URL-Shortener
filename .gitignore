@@ -5,7 +5,6 @@ coverage.out
 *.prof
 .vscode/
 *.png
-Checklist.md
 store.go.RWMutex
 *.db
 *.sqlite
