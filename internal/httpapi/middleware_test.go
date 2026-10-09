@@ -72,6 +72,33 @@ func TestLoggingDiscard(t *testing.T) {
 	}
 }
 
+func TestLoggingDiscardWithRateLimit(t *testing.T) {
+	h := NewWithRateLimit(store.New(), base, log.New(io.Discard, "", 0), 1, time.Minute)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/shorten",
+		strings.NewReader(`{"url":"https://example.com/"}`)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/shorten",
+		strings.NewReader(`{"url":"https://example.com/"}`)))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", rec.Code)
+	}
+}
+
+func TestRateLimitDoesNotLimitRedirects(t *testing.T) {
+	h := NewWithRateLimit(store.New(), base, log.New(io.Discard, "", 0), 1, time.Minute)
+	for i := 0; i < 2; i++ {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/"+strconv.Itoa(i), nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("redirect request %d status = %d, want 404", i+1, rec.Code)
+		}
+	}
+}
+
 func TestRateLimitShorten(t *testing.T) {
 	h := NewWithRateLimit(store.New(), base, log.New(io.Discard, "", 0), 1, time.Minute)
 	for i := 0; i < 2; i++ {

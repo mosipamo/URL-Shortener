@@ -79,7 +79,7 @@ shorten. Covered by tests in `internal/store` and `internal/httpapi`.
 
     gofmt -l . && go vet ./... && go test -v -race ./...
     go test -v -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | tail -n1
-    # total: (statements) 81.5% (with setting TEST_DATABSE_URL, without it, it is 78.4%)
+    # total: (statements) 81.6% (with setting TEST_DATABSE_URL, without it, it is 78.7%)
 
 In Windows cmd there is no `tail`: run `go tool cover -func=coverage.out` and read the last line.
 
