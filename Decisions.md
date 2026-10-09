@@ -2,13 +2,14 @@
 
 ## Dependencies
 
-There are **no** modules that require an entry here. Every module in `go.mod` is part of an explicitly allowed category:
+The project uses Gin for HTTP routing and GORM with PostgreSQL and SQLite drivers for database access and testing. These dependencies fall within the assignment's explicitly allowed categories. Environment-file loading is implemented using the Go standard library, so no third-party environment loader is required.
 
-- `github.com/gin-gonic/gin` — the HTTP router and context framework used by `internal/httpapi` (replacing the standard library `net/http` `ServeMux` that Parts 1–4 started with). 
+#### More details about the dependencies can be found in `go.mod`:
+
+- `github.com/gin-gonic/gin` — the HTTP router and context framework used by `internal/httpapi` (replacing the standard library `net/http` `ServeMux` that Parts 1–4 started with).
 - `gorm.io/gorm` plus the SQL drivers `gorm.io/driver/postgres` and `gorm.io/driver/sqlite` — GORM and its SQL driver(s) for Part 4 persistence. SQLite is used only in tests.
 - All remaining entries are indirect (`// indirect`) or Gin's own transitive dependencies.
-
-`.env` loading is done by `internal/envfile`, a standard-library-only parser, so no third-party env library (e.g. `godotenv`) is used.
+- `.env` loading is done by `internal/envfile`, a standard-library-only parser, so no third-party env library (e.g. `godotenv`) is used.
 
 ## Part 1
 
@@ -42,11 +43,11 @@ type Repository interface {
 - **Sentinel errors.** `model.ErrNotFound`, `model.ErrInvalidURL`, and `model.ErrCodeExhausted` live in `internal/model` so that neither the store implementations nor the HTTP layer need to import each other to compare errors. The store wraps them with `%w`, e.g. `get "abc": code not found`.
 - **How errors become status codes and bodies.** One method, `writeStoreError`, used by every Gin handler, switches with `errors.Is`:
 
-    | Error                                                                                                                                                     | Status | Body                                                                                   |
-    | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | -------------------------------------------------------------------------------------- |
-    | `ErrInvalidURL`                                                                                                                                           | 400    | `{"error":"<store message>"}` (safe, tells the client what is wrong)                   |
-    | `ErrNotFound`                                                                                                                                             | 404    | `{"error":"not found"}` (fixed text, so internal wrapping and the code are not echoed) |
-    | anything else                                                                                                                                             | 500    | `{"error":"internal error"}`; the real error is only logged                            |
+    | Error           | Status | Body                                                                                   |
+    | --------------- | ------ | -------------------------------------------------------------------------------------- |
+    | `ErrInvalidURL` | 400    | `{"error":"<store message>"}` (safe, tells the client what is wrong)                   |
+    | `ErrNotFound`   | 404    | `{"error":"not found"}` (fixed text, so internal wrapping and the code are not echoed) |
+    | anything else   | 500    | `{"error":"internal error"}`; the real error is only logged                            |
 
 Malformed JSON is a handler-level 400 (`invalid JSON body`) because it never reaches the store. All error bodies share the `{"error": "..."}` shape.
 
@@ -149,13 +150,14 @@ Malformed JSON is a handler-level 400 (`invalid JSON body`) because it never rea
   total operations across all goroutines, so it measures throughput, not the
   latency of one request.
 - **Server timeouts** (set in `cmd/server/main.go`, constants at the top):
-    | Setting                                                                     | Value | Why / behavior                                                                                                                                                                                                       |
-    | --------------------------------------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-    | `ReadHeaderTimeout`                                                         | 5 s   | Headers of a normal request arrive in milliseconds. A client that trickles headers (slowloris) is cut off. Observed: a connection that never finishes its headers, or sends nothing, is closed silently after 5.0 s. |
-    | `ReadTimeout`                                                               | 10 s  | Whole request including body. Bodies are tiny JSON (also capped at 1 MiB), so 10 s is generous.                                                                                                                      |
-    | `WriteTimeout`                                                              | 10 s  | Responses are small; a client that stops reading is dropped.                                                                                                                                                         |
-    | `IdleTimeout`                                                               | 60 s  | Keep-alive connections waiting for another request are closed after a minute, freeing file descriptors.                                                                                                              |
-    
+
+    | Setting             | Value | Why / behavior                                                                                                                                                                                                       |
+    | ------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+    | `ReadHeaderTimeout` | 5 s   | Headers of a normal request arrive in milliseconds. A client that trickles headers (slowloris) is cut off. Observed: a connection that never finishes its headers, or sends nothing, is closed silently after 5.0 s. |
+    | `ReadTimeout`       | 10 s  | Whole request including body. Bodies are tiny JSON (also capped at 1 MiB), so 10 s is generous.                                                                                                                      |
+    | `WriteTimeout`      | 10 s  | Responses are small; a client that stops reading is dropped.                                                                                                                                                         |
+    | `IdleTimeout`       | 60 s  | Keep-alive connections waiting for another request are closed after a minute, freeing file descriptors.                                                                                                              |
+
     `newServer` builds the server so a test can assert the timeouts are set and ordered sensibly.
 
 - **Eviction cap: none.** For a cache, evicting is harmless; for a URL
@@ -165,9 +167,9 @@ Malformed JSON is a handler-level 400 (`invalid JSON body`) because it never rea
 
 ## Part 4
 
-- **Storage choice: GORM + PostgreSQL 16.** Links must survive restarts and the database enforces the 
-  uniqueness rules, which a single mutex-protected map or file cannot do once there is more than one 
-  server process. The in-memory `Memory` store stays the default (`-store memory`), so `go run ./cmd/server` 
+- **Storage choice: GORM + PostgreSQL 16.** Links must survive restarts and the database enforces the
+  uniqueness rules, which a single mutex-protected map or file cannot do once there is more than one
+  server process. The in-memory `Memory` store stays the default (`-store memory`), so `go run ./cmd/server`
   works with nothing installed. `GormStore` implements the same
   `repository.Repository` interface (`Save`, `Get`); the handlers did not change.
   A compile-time assertion in `fake_test.go` guards that.
@@ -337,16 +339,16 @@ if *cache {
 - **CDN / edge caching for redirects (read path).** Hot `GET /{code}`
   responses are cacheable at the edge as **302** with a short TTL
   (suggested **60–300 s**) and **stale-while-revalidate**. Tradeoffs:
-  - **Cost / load:** most redirect traffic never hits the origin.
-  - **Consistency:** if a link were ever deleted or retargeted, clients
-    can see a **stale Location** until the TTL expires. Acceptable for a
-    shortener where codes are immutable after create (this project never
-    updates a stored URL). If deletion were added later, the CDN would
-    need purge-by-key or a very short TTL.
-  - **Origin headers:** a production edge config would set
-    `Cache-Control: public, max-age=60, stale-while-revalidate=30` on
-    successful redirects and `Cache-Control: no-store` on 404s so unknown
-    codes are not cached as empty.
+    - **Cost / load:** most redirect traffic never hits the origin.
+    - **Consistency:** if a link were ever deleted or retargeted, clients
+      can see a **stale Location** until the TTL expires. Acceptable for a
+      shortener where codes are immutable after create (this project never
+      updates a stored URL). If deletion were added later, the CDN would
+      need purge-by-key or a very short TTL.
+    - **Origin headers:** a production edge config would set
+      `Cache-Control: public, max-age=60, stale-while-revalidate=30` on
+      successful redirects and `Cache-Control: no-store` on 404s so unknown
+      codes are not cached as empty.
 - **Write-path scaling.** Create traffic is guarded by the in-process rate
   limiter on `POST /api/shorten` (see Part 6). If creates became the
   bottleneck, the next steps would be an async queue (accept → enqueue →
@@ -361,12 +363,12 @@ if *cache {
   Routing: the redirect path hashes the code and talks to one shard; the
   create path picks a shard the same way after generating the code (or
   generates until the code lands on a preferred shard). Tradeoffs:
-  - **Pros:** linear write/read capacity; hot codes stay on one shard so
-    per-shard caches stay effective.
-  - **Cons:** cross-shard idempotency (same long URL on two shards) needs
-    either a global URL index or accepting rare duplicate codes for one
-    URL; rebalancing shards later is operationally expensive. Until that
-    pain appears, vertical scale + read replicas / CDN is cheaper.
+    - **Pros:** linear write/read capacity; hot codes stay on one shard so
+      per-shard caches stay effective.
+    - **Cons:** cross-shard idempotency (same long URL on two shards) needs
+      either a global URL index or accepting rare duplicate codes for one
+      URL; rebalancing shards later is operationally expensive. Until that
+      pain appears, vertical scale + read replicas / CDN is cheaper.
 
 ## Part 6
 
@@ -386,17 +388,17 @@ if *cache {
   store (Redis) is added later.
 - **Domain policy (blocklist).** Enforced in `store.Normalize` /
   `checkHostPolicy` before any insert (HTTP **400**, `ErrInvalidURL`):
-  - **Allow:** `http` / `https` only, non-empty host, length ≤ 2048,
-    public hosts (no DNS lookup of the target — the server never fetches
-    the long URL).
-  - **Block:** `localhost` and `*.localhost`; loopback, private
-    (RFC 1918 / ULA), link-local, and unspecified IPs (covers cloud
-    metadata `169.254.169.254`); plus a small hostname denylist
-    (`malware.example`, `phishing.example`) extensible in
-    `blockedHosts`.
-  - **Not covered:** a public hostname that later resolves to a private
-    IP (DNS rebinding). Mitigating that would need resolve-at-create or
-    egress controls, which is out of scope here.
+    - **Allow:** `http` / `https` only, non-empty host, length ≤ 2048,
+      public hosts (no DNS lookup of the target — the server never fetches
+      the long URL).
+    - **Block:** `localhost` and `*.localhost`; loopback, private
+      (RFC 1918 / ULA), link-local, and unspecified IPs (covers cloud
+      metadata `169.254.169.254`); plus a small hostname denylist
+      (`malware.example`, `phishing.example`) extensible in
+      `blockedHosts`.
+    - **Not covered:** a public hostname that later resolves to a private
+      IP (DNS rebinding). Mitigating that would need resolve-at-create or
+      egress controls, which is out of scope here.
 - **What is logged and never logged.** Each HTTP request produces one JSON
   `slog` record with method, Gin route template, status code/text, and
   fractional duration in milliseconds. Statuses 4xx are `WARN`; 5xx are
@@ -409,3 +411,7 @@ if *cache {
   counting requests over time windows, while status fields support error
   counts and rates in a log aggregator. No metrics or pprof endpoint is
   exposed, so there is no diagnostic endpoint to secure.
+
+## AI-Assisted Development
+
+I used AI tools to assist with implementation and code development, design and architecture decisions, documentation writing, test development, and benchmarking. All generated suggestions were reviewed and adapted as needed throughout the development process.

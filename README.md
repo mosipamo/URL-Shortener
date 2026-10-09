@@ -8,13 +8,13 @@ URL shortener in Go.
     go run ./cmd/server                                                          # in memory: data is lost on restart
     go run ./cmd/server -addr :9000 -base http://localhost:9000 -store postgres  # in PostgreSQL: links survive restarts
 
-| Flag          | Default                 | Meaning                                        |
-| ------------- | ----------------------- | ---------------------------------------------- |
-| `-addr`       | `:8080`                 | listen address                                 |
-| `-base`       | `http://localhost:8080` | prefix used to build `short_url`               |
-| `-store`      | `memory`                | store kind (memory or postgres)                |
-| `-rate-limit` | `60`                    | maximum create requests per IP in a window     |
-| `-rate-window`| `1m0s`                  | window for the shorten rate limiter            |
+| Flag           | Default                 | Meaning                                    |
+| -------------- | ----------------------- | ------------------------------------------ |
+| `-addr`        | `:8080`                 | listen address                             |
+| `-base`        | `http://localhost:8080` | prefix used to build `short_url`           |
+| `-store`       | `memory`                | store kind (memory or postgres)            |
+| `-rate-limit`  | `60`                    | maximum create requests per IP in a window |
+| `-rate-window` | `1m0s`                  | window for the shorten rate limiter        |
 
 The shorten endpoint is rate-limited to 60 requests per minute per client IP by default, so a burst of repeated `POST /api/shorten` requests is rejected with `429 Too Many Requests`.
 
@@ -23,6 +23,7 @@ The shorten endpoint is rate-limited to 60 requests per minute per client IP by 
 **Request logs:** each request emits a structured JSON record with method, route template, status, and fractional duration in milliseconds. 4xx and 5xx responses are marked as warnings and errors. The raw URL, query string, request body, and redirect target are omitted; request timestamps and statuses can be aggregated to calculate RPS and error rates.
 
 **Domain policy:** create rejects localhost, private/link-local/loopback IPs, and a small hostname denylist (HTTP 400). The server never fetches the long URL. Details in [DECISIONS.md](DECISIONS.md) Part 6.
+
 ## Run with PostgreSQL (links survive restarts)
 
 1. Create a database and a user in PostgreSQL (pgAdmin or `psql`), e.g. user
@@ -96,7 +97,7 @@ PostgreSQL (use a throwaway database; the test TRUNCATEs `links`):
 
 - Replace USER, PASSWORD, and DATABASE with your PostgreSQL test database credentials.
 - If the password contains special URL characters such as #, URL-encode them.
-- By running with your current database URL, your records in the table will be removed!(TestContractPostgres will truncate links table!!) You can test this with another test database url.
+- IMPORTANT: By running with your current database URL, your records in the table will be removed!(TestContractPostgres will truncate links table!!) You can test this with another test database url.
 - In windows, I needed to disable my security protection(antivirus) to execute `-race` in /cmd/server!!
 
 ## Performance
@@ -109,15 +110,15 @@ go test -run='^$' -bench=. -benchmem ./...
 
 Selected benchmark results:
 
-| Benchmark                      |     ns/op |  B/op | allocs/op | Notes                                              |
-| ------------------------------ | --------: | ----: | --------: | -------------------------------------------------- |
-| `BenchmarkRedirect-16`         |      8616 |  6500 |        30 | Full Gin redirect handler path, parallel benchmark |
-| `BenchmarkShorten-16`          |     16940 |  7616 |        40 | Full shorten handler path, parallel benchmark      |
-| `BenchmarkMemoryGet-16`        |     160.6 |     0 |         0 | In-memory lookup under synchronization             |
-| `BenchmarkMemorySaveNew-16`    |      2580 |   646 |         5 | New in-memory link                                 |
-| `BenchmarkGormGet-16`          |    194129 |  3599 |        62 | GORM + SQLite lookup                               |
-| `BenchmarkGormSaveExisting-16` |    190765 |  3799 |        64 | Existing-link persistence                          |
-| `BenchmarkGormSaveNew-16`      |   3340094 | 10135 |       129 | New-link persistence                               |
+| Benchmark                      |   ns/op |  B/op | allocs/op | Notes                                              |
+| ------------------------------ | ------: | ----: | --------: | -------------------------------------------------- |
+| `BenchmarkRedirect-16`         |    8616 |  6500 |        30 | Full Gin redirect handler path, parallel benchmark |
+| `BenchmarkShorten-16`          |   16940 |  7616 |        40 | Full shorten handler path, parallel benchmark      |
+| `BenchmarkMemoryGet-16`        |   160.6 |     0 |         0 | In-memory lookup under synchronization             |
+| `BenchmarkMemorySaveNew-16`    |    2580 |   646 |         5 | New in-memory link                                 |
+| `BenchmarkGormGet-16`          |  194129 |  3599 |        62 | GORM + SQLite lookup                               |
+| `BenchmarkGormSaveExisting-16` |  190765 |  3799 |        64 | Existing-link persistence                          |
+| `BenchmarkGormSaveNew-16`      | 3340094 | 10135 |       129 | New-link persistence                               |
 
 The in-memory lookup is extremely fast compared with the full HTTP redirect path: approximately 160 ns versus 8.6 µs in these benchmarks. This shows that most of the redirect benchmark cost comes from the HTTP/Gin request path rather than the basic in-memory map lookup.
 
@@ -150,13 +151,13 @@ median ns/op, lower is better:
 go test -run='^$' -bench=BenchmarkLockCompare -benchmem -count=6 -benchtime=2s ./internal/store/
 ```
 
-| Benchmark        | Threads | Mutex | RWMutex | Result                          |
-| ---------------- | ------: | ----: | ------: | ------------------------------- |
-| `Get`            |       1 |  58.6 |    63.7 | ~equal                          |
-| `Get`            |       4 | 100.0 |   156.7 | Mutex faster (~36%)             |
-| `Get`            |      16 | 161.5 |   147.5 | RWMutex ~9% faster (near noise) |
-| `SaveExisting`   |      16 | 330.0 |   390.0 | ~equal, noisy                   |
-| `SaveNew`        |      16 | ~2900 |   ~2800 | equal (noise)                   |
+| Benchmark      | Threads | Mutex | RWMutex | Result                          |
+| -------------- | ------: | ----: | ------: | ------------------------------- |
+| `Get`          |       1 |  58.6 |    63.7 | ~equal                          |
+| `Get`          |       4 | 100.0 |   156.7 | Mutex faster (~36%)             |
+| `Get`          |      16 | 161.5 |   147.5 | RWMutex ~9% faster (near noise) |
+| `SaveExisting` |      16 | 330.0 |   390.0 | ~equal, noisy                   |
+| `SaveNew`      |      16 | ~2900 |   ~2800 | equal (noise)                   |
 
 Mixed read/create workloads (one create per N ops), 16 threads, warm values:
 
@@ -172,7 +173,7 @@ run) and `RWMutex` needs a warm-up in the mixed benchmark (first iteration
 across runs.
 
 **Conclusion: the two locks are effectively a wash.** `RWMutex` wins pure reads
-only at high thread counts (~9% at 16, within noise) and is *behind* at 4
+only at high thread counts (~9% at 16, within noise) and is _behind_ at 4
 threads (~36%); it does not win the write paths. The mixed case flips with
 warm-up — one run of the same benchmark had `RWMutex` ~2× ahead, another had it
 behind — and the run-to-run spread (~58 vs ~180 ns at 90% reads) is larger than
