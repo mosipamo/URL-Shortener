@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,7 +12,7 @@ import (
 )
 
 func TestNewServerTimeouts(t *testing.T) {
-	srv := newServer(":0", "http://localhost:8080", store.New())
+	srv := newServer(":0", "http://localhost:8080", store.New(), defaultRateLimit, defaultRateWindow)
 	if srv.ReadHeaderTimeout <= 0 || srv.ReadTimeout <= 0 || srv.WriteTimeout <= 0 || srv.IdleTimeout <= 0 {
 		t.Fatalf("all timeouts must be set: %+v", srv)
 	}
@@ -20,7 +22,7 @@ func TestNewServerTimeouts(t *testing.T) {
 }
 
 func TestNewServerHandler(t *testing.T) {
-	srv := newServer(":0", "https://sho.rt", store.New())
+	srv := newServer(":0", "https://sho.rt", store.New(), defaultRateLimit, defaultRateWindow)
 	rec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/shorten",
 		strings.NewReader(`{"url":"https://go.dev"}`)))
@@ -29,6 +31,40 @@ func TestNewServerHandler(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"short_url":"https://sho.rt/`) {
 		t.Fatalf("body = %s", rec.Body)
+	}
+}
+
+func TestRunCleanShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	err := run(ctx, []string{"-addr", ":9000", "-rate-limit", "3", "-rate-window", "2s"}, func(srv *http.Server) error {
+		if srv.Addr != ":9000" {
+			t.Errorf("Addr = %q", srv.Addr)
+		}
+		cancel()
+		return http.ErrServerClosed
+	})
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+}
+
+func TestRunListenError(t *testing.T) {
+	wantErr := errors.New("listen failed")
+	err := run(context.Background(), nil, func(*http.Server) error {
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("run() error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestRunInvalidFlag(t *testing.T) {
+	err := run(context.Background(), []string{"-unknown"}, func(*http.Server) error {
+		t.Fatal("listener should not be called")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected flag parsing error")
 	}
 }
 

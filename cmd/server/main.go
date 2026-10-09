@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -30,10 +31,10 @@ const (
 	idleTimeout       = 60 * time.Second
 )
 
-func newServer(addr, base string, repo repository.Repository) *http.Server {
+func newServer(addr, base string, repo repository.Repository, rateLimit int, rateWindow time.Duration) *http.Server {
 	return &http.Server{
 		Addr:              addr,
-		Handler:           httpapi.New(repo, base, log.Default()),
+		Handler:           httpapi.NewWithRateLimit(repo, base, log.Default(), rateLimit, rateWindow),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
@@ -69,21 +70,25 @@ func openStore(kind, dsn string) (repository.Repository, func() error, error) {
 	}
 }
 
-func main() {
+func run(ctx context.Context, args []string, listenAndServe func(*http.Server) error) error {
 	if err := envfile.Load(".env"); err != nil {
-		log.Fatalf("config: %v", err)
+		return fmt.Errorf("config: %w", err)
 	}
 
-	addr := flag.String("addr", defaultAddr, "listen address")
-	base := flag.String("base", defaultBase, "base URL used in short_url")
-	store := flag.String("store", "memory", "store kind (memory or postgres)")
-	rateLimit := flag.Int("rate-limit", defaultRateLimit, "max shorten requests per client per rate-window")
-	rateWindow := flag.Duration("rate-window", defaultRateWindow, "window for the shorten rate limiter")
-	flag.Parse()
+	flags := flag.NewFlagSet("server", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	addr := flags.String("addr", defaultAddr, "listen address")
+	base := flags.String("base", defaultBase, "base URL used in short_url")
+	storeKind := flags.String("store", "memory", "store kind (memory or postgres)")
+	rateLimit := flags.Int("rate-limit", defaultRateLimit, "max shorten requests per client per rate-window")
+	rateWindow := flags.Duration("rate-window", defaultRateWindow, "window for the shorten rate limiter")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
 
-	repo, closeStore, err := openStore(*store, os.Getenv("DATABASE_URL"))
+	repo, closeStore, err := openStore(*storeKind, os.Getenv("DATABASE_URL"))
 	if err != nil {
-		log.Fatalf("store: %v", err)
+		return fmt.Errorf("store: %w", err)
 	}
 	defer func() {
 		if cerr := closeStore(); cerr != nil {
@@ -91,15 +96,15 @@ func main() {
 		}
 	}()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 
-	srv := newServer(*addr, *base, repo)
-	httpapiHandler := httpapi.NewWithRateLimit(repo, *base, log.Default(), *rateLimit, *rateWindow)
-	srv.Handler = httpapiHandler
-	log.Printf("listening on %s (base %s, store %s, rate-limit %d/%s)", *addr, *base, *store, *rateLimit, *rateWindow)
+	srv := newServer(*addr, *base, repo, *rateLimit, *rateWindow)
+	log.Printf("listening on %s (base %s, store %s, rate-limit %d/%s)", *addr, *base, *storeKind, *rateLimit, *rateWindow)
 
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
@@ -108,8 +113,22 @@ func main() {
 		}
 	}()
 
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
+	err = listenAndServe(srv)
+	stop()
+	<-shutdownDone
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
 	}
 	log.Println("server stopped cleanly")
+	return nil
+}
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx, os.Args[1:], func(srv *http.Server) error {
+		return srv.ListenAndServe()
+	}); err != nil {
+		log.Fatal(err)
+	}
 }
